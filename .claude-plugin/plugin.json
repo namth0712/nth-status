@@ -1,0 +1,7 @@
+{
+  "name": "nth-status",
+  "version": "0.1.0",
+  "description": "Compact four-row session status band with model and effort pickers and a /nth-status detail pane",
+  "author": { "name": "namth0712" },
+  "types": "./types/index.d.ts"
+}

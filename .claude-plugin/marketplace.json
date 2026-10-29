@@ -1,0 +1,14 @@
+{
+  "name": "namth0712-nth-status",
+  "owner": { "name": "namth0712" },
+  "description": "nth-status: a live session dashboard mod for Claude Code",
+  "plugins": [
+    {
+      "name": "nth-status",
+      "source": "./",
+      "description": "Live session dashboard above the prompt: model and effort pickers, context, 5h and 7d quotas, prompt cache, costs, and a /nth-status detail pane",
+      "homepage": "https://github.com/namth0712/nth-status",
+      "license": "MIT"
+    }
+  ]
+}
