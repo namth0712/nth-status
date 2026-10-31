@@ -42,16 +42,16 @@ cost), the Model and Effort pickers, and the Actions menu:
 - **Model ▾ and Effort ▾ pickers** that switch the session model or effort.
 - **`[ Copy ]`** copies the last response (the built-in `/copy` in the
   terminal).
-- **`[ Actions ▾ ]`**: Copy code, Diff, Agents, Copy prompt, Session info.
+- **`[ ≡ ]`** (Actions): Copy code, Diff, Agents, Copy prompt, Session info.
 - **`/nth-status`** opens a detail pane with every figure, reset times, cache
   details and each working agent.
 
 **Adapts to the terminal**
 
-- A three-zone dashboard where there is room, compact rows in narrow or short
-  terminals, and fewer segments as the width shrinks.
-- Colors follow Claude Code's dark and light themes; VS Code follows the
-  editor theme.
+- A dashboard of three bordered blocks where there is room, compact rows in
+  narrow or short terminals, and fewer segments as the width shrinks.
+- Colors follow Claude Code's dark and light themes and stay readable whichever
+  background the terminal itself has; VS Code follows the editor theme.
 
 **Observe-only**
 
@@ -62,7 +62,7 @@ cost), the Model and Effort pickers, and the Actions menu:
 
 ## Screenshots
 
-| Terminal, narrow (compact rows) | VS Code chat panel (read-only) |
+| Terminal, narrow (compact rows) | VS Code chat panel |
 |---|---|
 | ![Compact rows in a 60-column terminal](docs/images/terminal-compact.png) | ![The VS Code dashboard](docs/images/vscode-dashboard.png) |
 
@@ -78,7 +78,7 @@ theme, a sample project; VS Code: the working-directory path is blurred).
 | Surface | Status |
 |---|---|
 | Terminal CLI (Windows, macOS, Linux) | Full band and pane. Checked on Windows; macOS and Linux use the same mod API but have not been checked |
-| VS Code extension chat panel | Read-only dashboard: no pickers or buttons ([details](docs/status-and-hooks.md#vs-code)) |
+| VS Code extension chat panel | Dashboard with the Model and Effort pickers; no Copy, Actions or agent count ([details](docs/status-and-hooks.md#vs-code)) |
 | Claude desktop app | Compact band and pane per the mod API; not verified |
 | Headless `-p` / Agent SDK | Not drawn |
 
@@ -187,15 +187,15 @@ The panel updates on its own. Every control is a button:
   Effort pick saves the level as that model's default.
 - **`[ Copy ]`** runs the built-in `/copy` in the terminal. In the desktop
   app it copies the last completed response as Markdown.
-- **`[ Actions ▾ ]`**: *Copy code* copies a code block from the last
-  response (a choice row lists them when there are several), *Diff* runs
+- **`[ ≡ ]`** (Actions; `Actions ▾` in the desktop app): *Copy code* copies a
+  code block from the last response (a choice row lists them when there are several), *Diff* runs
   `/diff`, *Agents* opens the detail pane, *Copy prompt* copies your last
   prompt, *Session info* copies a plain-text summary.
 - **The folder** opens a row with the whole path and *Copy path*.
 
-Severity colors: context turns yellow at 50 % and red at 80 %; the 5h and 7d
-quotas at 60 % and 85 %. A figure shows `—` or stays hidden until Claude Code
-reports it. nth-status never guesses.
+Context, 5h and 7d rows are their own progress bars, colored by four levels
+([thresholds](docs/status-and-hooks.md#levels)). A figure shows `—` or stays
+hidden until Claude Code reports it. nth-status never guesses.
 
 More detail on every figure and control:
 [docs/status-and-hooks.md](docs/status-and-hooks.md).

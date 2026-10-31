@@ -2,6 +2,14 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   board,
+  cliLayout,
+  CLI_INSET,
+  inkOf,
+  panelFill,
+  ZONE_BORDER,
+  ZONE_GAP,
+  ZONE_MARGIN,
+  zoneColors,
   formatAge,
   freshestQuota,
   mergeQuota,
@@ -14,7 +22,7 @@ import {
   promptsText,
   cacheState,
   codeBlocks,
-  contextTone,
+  contextLevel,
   emptyStatus,
   figureSvg,
   fit,
@@ -27,12 +35,11 @@ import {
   layout,
   parseCapture,
   promptCost,
-  quotaTone,
+  quotaLevel,
   lastResponse,
   runningAgents,
   sessionInfo,
   shortModel,
-  severityTone,
   shortPath,
   upgrade,
   vscodeColor,
@@ -64,8 +71,10 @@ describe('formatting', () => {
   })
 
   test('threshold colors', async () => {
-    expect([contextTone(49), contextTone(50), contextTone(80)]).toEqual(['success', 'warning', 'error'])
-    expect([quotaTone(59), quotaTone(60), quotaTone(85)]).toEqual(['success', 'warning', 'error'])
+    expect([0, 49, 50, 64, 65, 79, 80, 100].map(contextLevel)).toEqual(['normal', 'normal', 'notice', 'notice', 'warning', 'warning', 'critical', 'critical'])
+    expect([0, 59, 60, 74, 75, 84, 85, 100].map(quotaLevel)).toEqual(['normal', 'normal', 'notice', 'notice', 'warning', 'warning', 'critical', 'critical'])
+    // By the percentage as shown: 49.6 % reads `50%`.
+    expect([contextLevel(49.4), contextLevel(49.6)]).toEqual(['normal', 'notice'])
   })
 
   test('VS Code colors: severity kept readable, faint or unknown keys replaced', async () => {
@@ -78,26 +87,39 @@ describe('formatting', () => {
     ])
   })
 
-  test('VS Code dashboard: one severity scale, tokens, weekday clock, the large figures', async () => {
-    expect([0, 69.9, 70, 89.9, 90, 100].map(severityTone)).toEqual(['success', 'success', 'warning', 'warning', 'error', 'error'])
+  test('VS Code dashboard: tokens, weekday clock, the large figures', async () => {
     expect([950, 184_321, 999_499, 999_500, 1_000_000, 1_500_000].map(formatTokens)).toEqual(['950', '184k', '999k', '1M', '1M', '1.5M'])
     expect(formatDayClock(new Date(2026, 10, 2, 9, 5).getTime())).toBe('Mon 09:05')
     // Sized to the text as Segoe UI draws it at 15 px semibold, held to that length in another font.
-    const pct = figureSvg('77%', '#bf8700')
+    const pct = figureSvg('77%', 'notice')
     expect(pct.width).toBe(30)
     expect(pct.source).toContain('textLength="28.68" lengthAdjust="spacingAndGlyphs"')
     expect(pct.source).toContain('font-size="15" font-weight="600"')
-    // A severity color takes a little of the panel's text color; a label is the text color itself.
-    expect(pct.source).toContain('fill="#bf8700" style="fill:color-mix(in srgb,#bf8700 78%,currentColor)"')
+    // A level's lightness follows the panel's text color, dark on a light theme and bright on a dark
+    // one, with a plain fallback; a label is the text color itself.
+    expect(pct.source).toContain('fill="#bf8700" style="fill:oklch(from currentColor calc(l * 0.75 + 0.18) 0.14 90)"')
     expect(pct.source).toContain('>77%</text>')
     expect(pct.source).not.toContain('fill-opacity')
     expect(figureSvg('5h', null).source).toContain('fill="currentColor"')
-    expect(figureSvg('100%', '#e5534b').width).toBe(36)
-    expect(figureSvg('20%', '#2ea043', true).source).toContain('fill-opacity="0.55"')
+    expect(figureSvg('100%', 'critical').width).toBe(36)
+    expect(figureSvg('20%', 'normal', true).source).toContain('fill-opacity="0.55"')
   })
 })
 
+const cellsOf = (runs: { text: string }[]) => runs.reduce((sum, run) => sum + [...run.text].reduce((n, ch) => n + (/\p{Emoji_Presentation}/u.test(ch) ? 2 : 1), 0), 0)
+
 describe('terminal zones', () => {
+  test('a wide character counts two cells, and a fill never splits one', async () => {
+    const row = { key: 'cache', left: [{ text: 'DB' }, { text: ' ' }, { text: '🔥' }], right: [], meter: 25 }
+    const painted = paintRow(row, 12, '#t', '#f')
+    expect(painted.map(run => run.text).join('')).toBe(' DB 🔥      ')
+    expect(cellsOf(painted)).toBe(12)
+    // Three of twelve cells filled: the padding and `DB`.
+    expect(painted.filter(run => run.bg === '#f').map(run => run.text).join('')).toBe(' DB')
+    // Five would end inside the flame: it stays out, whole.
+    expect(paintRow({ ...row, meter: 42 }, 12, '#t', '#f').filter(run => run.bg === '#f').map(run => run.text).join('')).toBe(' DB ')
+  })
+
   test('a row painted cell by cell: padding, figures at both edges, a meter under its first cells', async () => {
     const row = { key: 'five', left: [{ text: '5h', isBold: true }], right: [{ text: '50%', color: 'warning' as const }], meter: 50 }
     const painted = paintRow(row, 20, '#tint', '#fill')
@@ -117,6 +139,80 @@ describe('terminal zones', () => {
     expect(paintRow({ ...row, meter: 1 }, 20, '#t', '#f').filter(run => run.bg === '#f').map(run => run.text).join('')).toBe(' ')
     expect(paintRow({ ...row, meter: 0 }, 20, '#t', '#f').some(run => run.bg === '#f')).toBe(false)
     expect(paintRow(row, 20).every(run => run.bg === undefined)).toBe(true)
+  })
+
+  test('the zones, their borders, gaps and margins fill the width; too narrow for them: none', async () => {
+    const status = { ...emptyStatus('S'), folder: '/work/app', model: 'claude-opus-5-5' }
+    const now = 1_000_000
+    for (const columns of [71, 80, 100, 180]) {
+      const cli = cliLayout(status, now, columns)!
+      const inside = cli.zones.reduce((sum, zone) => sum + zone.width + ZONE_BORDER, 0)
+      expect(inside + 2 * ZONE_GAP + 2 * ZONE_MARGIN).toBe(columns)
+    }
+    expect(cliLayout(status, now, 70)).toBeNull()
+    // The header keeps to its margin, its controls in it however long the path.
+    const fitted = cliLayout({ ...status, folder: `/${'long/'.repeat(40)}app` }, now, 71)!
+    expect(fitted.header.right.map(seg => seg.text)).toEqual(['Opus 5.5 ▾', 'Effort ▾', '[ Copy ]', '[ ≡ ]'])
+    const used = fitted.header.groups.flat().concat(fitted.header.right).reduce((sum, seg) => sum + seg.text.length + 1, -1)
+    expect(used).toBeLessThanOrEqual(71 - 2 * CLI_INSET)
+    // Nothing for the footer: no footer. An agent at work: there it is.
+    expect(cliLayout(status, now, 100)!.footer).toBeNull()
+    const agents = [{ id: 'a', name: 'x', status: 'running', startedAt: now, isEstimated: false }]
+    expect(cliLayout({ ...status, agents }, now, 100)!.footer?.right.map(seg => seg.text)).toEqual(['1 agent'])
+  })
+
+  test('a meter names its level beside its percentage', async () => {
+    const status = { ...emptyStatus('S'), usage: { ctx: 72, five: { pct: 84, resetsAt: 9_000_000 }, seven: { pct: 85, resetsAt: 9_000_000 } } }
+    const zones = cliLayout(status, 1_000_000, 100)!.zones
+    const row = (key: string) => zones.flatMap(zone => zone.rows).find(found => found.key === key)!
+    expect([row('context-use').level, row('five').level, row('seven').level]).toEqual(['warning', 'warning', 'critical'])
+    expect(row('context-use').left[0]?.level).toBe('warning')
+    expect(row('seven').right[0]?.level).toBe('critical')
+  })
+
+  test('band colors per theme family; none where the theme is unknown, automatic or ANSI-only', async () => {
+    for (const theme of ['light', 'light-daltonized', 'dark', 'dark-daltonized']) {
+      expect(panelFill(theme)).toBeDefined()
+      expect(zoneColors(theme)?.borders.context).toBeDefined()
+    }
+    for (const theme of ['auto', 'light-ansi', 'dark-ansi', 'custom:mine', undefined]) {
+      expect(panelFill(theme)).toBeUndefined()
+      expect(zoneColors(theme)).toBeUndefined()
+    }
+  })
+
+  test('a run’s color: the band’s ink on a fill, a darker tone where the theme’s is faint, a level’s own', async () => {
+    const light = zoneColors('light')
+    expect(inkOf({}, light)).toBe('#1b2a4a')
+    expect(inkOf({ isDim: true }, light)).toBe('#46546f')
+    expect(inkOf({ color: 'warning' }, light)).toBe('#7a5600')
+    expect(inkOf({ color: 'error' }, light)).toBe('error')
+    expect(inkOf({ color: 'warning' }, zoneColors('light-daltonized'))).toBe('#8a4f00')
+    expect(inkOf({ color: 'success' }, zoneColors('light-daltonized'))).toBe('success')
+    expect(inkOf({ color: 'warning' }, zoneColors('dark'))).toBe('warning')
+    expect(inkOf({}, zoneColors('dark'))).toBe('#f2f5f9')
+    // A level outranks a color.
+    expect(inkOf({ level: 'critical', color: 'success' }, light)).toBe('#9e1220')
+    expect(inkOf({ level: 'normal' }, zoneColors('dark'))).toBe('#6ee7a8')
+    // No fill: the terminal's foreground is right, whatever its background; a level as a theme key.
+    expect(inkOf({}, undefined)).toBeUndefined()
+    expect(inkOf({ color: 'warning' }, undefined)).toBe('warning')
+    expect((['normal', 'notice', 'warning', 'critical'] as const).map(level => inkOf({ level }, undefined))).toEqual(['success', 'warning', 'claude', 'error'])
+  })
+
+  test('every level stands out from its panel: percentages readable on the fill and off it', async () => {
+    const lin = (c: number) => (c / 255 <= 0.03928 ? c / 255 / 12.92 : ((c / 255 + 0.055) / 1.055) ** 2.4)
+    const lum = (hex: string) => [1, 3, 5].map(i => lin(parseInt(hex.slice(i, i + 2), 16))).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i]!, 0)
+    const contrast = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05)
+    for (const theme of ['light', 'light-daltonized', 'dark', 'dark-daltonized']) {
+      const colors = zoneColors(theme)!
+      for (const { fill, text } of Object.values(colors.levels)) {
+        expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.5)
+        expect(contrast(colors.ink, fill)).toBeGreaterThanOrEqual(7)
+        expect(contrast(colors.muted, fill)).toBeGreaterThanOrEqual(4.5)
+        for (const tint of [colors.context, colors.meta, colors.quota, panelFill(theme)!]) expect(contrast(text, tint)).toBeGreaterThanOrEqual(4.5)
+      }
+    }
   })
 })
 
@@ -138,13 +234,13 @@ describe('figures', () => {
       compactionBase: 0,
     }
     const shown = board(status, NOW)
-    expect(shown.context).toEqual({ meter: { pct: 75, tone: 'warning' }, tokens: '150k/200k', cache: null, compactions: '2' })
+    expect(shown.context).toEqual({ meter: { pct: 75, level: 'warning' }, tokens: '150k/200k', cache: null, compactions: '2' })
     expect(shown.last).toEqual({ label: 'Prompt', time: '1m05s', cost: null })
     expect(shown.session.prompts).toBe('3')
     // The same estimate as the terminal's, without its `~`.
     expect(board({ ...status, usage: { ...status.usage, costUsd: 8.42 } }, NOW).session.cost).toBe('$8.42')
     // No reset reported: the figure without a countdown. A reset already past: no reading at all.
-    expect(shown.five).toEqual({ pct: 95, tone: 'error', left: null, at: null, age: null })
+    expect(shown.five).toEqual({ pct: 95, level: 'critical', left: null, at: null, age: null })
     expect(shown.seven).toBeNull()
     // Earlier compactions unknown: what was counted, as a floor.
     expect(board({ ...status, compactionBase: null }, NOW).context.compactions).toBe('≥2')
@@ -453,14 +549,14 @@ describe('layout', () => {
     expect(folder(40).length).toBeLessThanOrEqual(40 - 9)
   })
 
-  test('labels are muted; only the percentages carry the severity color', async () => {
+  test('labels are muted; only the percentages carry a level', async () => {
     const status = { ...emptyStatus('S'), model: 'claude-opus-5-5', usage: { ctx: 85, five: { pct: 10 } } }
     const segs = layout(status, NOW, 100).rows.find(r => r.key === 'usage')!.groups[1]!
-    expect(segs.map(s => [s.text, s.color ?? (s.isDim ? 'dim' : 'plain')])).toEqual([
+    expect(segs.map(s => [s.text, s.level ?? (s.isDim ? 'dim' : 'plain')])).toEqual([
       ['Ctx', 'dim'],
-      ['85%', 'error'],
+      ['85%', 'critical'],
       ['5h', 'dim'],
-      ['10%', 'success'],
+      ['10%', 'normal'],
     ])
   })
 
@@ -478,7 +574,7 @@ describe('layout', () => {
     const narrow = layout(full, NOW, 30).rows
     expect(narrow.map(r => r.key)).toEqual(['project', 'usage', 'session'])
     expect(narrow[2]!.groups).toEqual([])
-    expect(narrow[2]!.right.map(s => s.text)).toEqual(['[ Copy ]', '[ Actions ▾ ]'])
+    expect(narrow[2]!.right.map(s => s.text)).toEqual(['[ Copy ]', '[ ≡ ]'])
   })
 
   test('the session row drops its cost, then its label, then the agent count; Copy and Actions stay', async () => {
@@ -487,14 +583,20 @@ describe('layout', () => {
       usage: { startedAt: NOW - 80 * MIN, costUsd: 7.72 },
       agents: [{ id: 'a', name: 'x', status: 'running', startedAt: NOW, isEstimated: true }],
     }
-    const session = (columns: number) => {
-      const row = layout(status, NOW, columns).rows.find(r => r.key === 'session')!
+    const session = (columns: number, isTerminal = true) => {
+      const row = layout(status, NOW, columns, isTerminal).rows.find(r => r.key === 'session')!
       return [...row.groups.flat(), ...row.right].map(s => s.text)
     }
-    expect(session(60)).toEqual(['Session', '1h20m', '~$7.72', '1 agent', '[ Copy ]', '[ Actions ▾ ]'])
-    expect(session(51)).toEqual(['Session', '1h20m', '1 agent', '[ Copy ]', '[ Actions ▾ ]'])
-    expect(session(44)).toEqual(['1h20m', '1 agent', '[ Copy ]', '[ Actions ▾ ]'])
-    expect(session(30)).toEqual(['[ Copy ]', '[ Actions ▾ ]'])
+    // The terminal's Actions is one glyph, so all of it fits sooner.
+    expect(session(44)).toEqual(['Session', '1h20m', '~$7.72', '1 agent', '[ Copy ]', '[ ≡ ]'])
+    expect(session(43)).toEqual(['Session', '1h20m', '1 agent', '[ Copy ]', '[ ≡ ]'])
+    expect(session(39)).toEqual(['1 agent', '[ Copy ]', '[ ≡ ]'])
+    expect(session(20)).toEqual(['[ Copy ]', '[ ≡ ]'])
+    // Elsewhere it keeps its word.
+    expect(session(60, false)).toEqual(['Session', '1h20m', '~$7.72', '1 agent', '[ Copy ]', '[ Actions ▾ ]'])
+    expect(session(51, false)).toEqual(['Session', '1h20m', '1 agent', '[ Copy ]', '[ Actions ▾ ]'])
+    expect(session(44, false)).toEqual(['1h20m', '1 agent', '[ Copy ]', '[ Actions ▾ ]'])
+    expect(session(30, false)).toEqual(['[ Copy ]', '[ Actions ▾ ]'])
     const crowded: Row = { key: 's', groups: [[{ key: 't', text: '1h20m' }]], right: [{ key: 'a', text: '1 agent', drop: 7 }, { key: 'c', text: 'Copy' }] }
     expect(fit(crowded, 12).right.map(s => s.text)).toEqual(['Copy'])
   })
@@ -516,7 +618,7 @@ describe('layout', () => {
     expect(layout(status, NOW, 100).rows.find(r => r.key === 'session')!.right.map(s => s.text)).toEqual([
       '1 agent',
       '[ Copy ]',
-      '[ Actions ▾ ]',
+      '[ ≡ ]',
     ])
     const running = { ...status, prompt: { phase: 'running' as const, startedAt: NOW - 5000, costAtStart: 7 } }
     expect(

@@ -50,10 +50,14 @@ it. The dashboard then shows the mod's own estimate (`~4m`).
 - `Cache Cold` shows only after a real expiry: one cache TTL idle in the
   terminal, one hour (the longest TTL) after the last cache use in VS Code.
 - After `Esc` returns to the prompt, or a click lands outside the panel, an
-  open choice row or menu stays open until the next prompt, a choice, or a
-  click in the panel.
-- A Model pick saves `model` in your user settings and an Effort pick saves
-  the level as the model's default, as typing `/model` or `/effort` does.
+  open choice row or menu stays open until the next prompt, a choice, or (in
+  the terminal) a click in the panel.
+- A Model pick saves `model` in your user settings. In the terminal an Effort
+  pick saves the level as the model's default, as typing `/effort` does; in
+  VS Code it holds for the session only.
+- In VS Code, a pick shows in the transcript as a command from the nth-status
+  plugin, and the extension's own selector can keep showing the old value
+  ([details](status-and-hooks.md#vs-code)). The dashboard shows what requests use.
 - In VS Code, the panel can refuse images for a few minutes; the figures then
   show as text and emoji.
 

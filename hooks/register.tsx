@@ -6,17 +6,21 @@ import {
   EFFORTS,
   FIGURE_HEIGHT,
   ICON_SIZE,
+  ICONS,
   SEVERITY,
   SVG_ICONS,
+  VS_LEVELS,
   agentLines,
   aliasLabel,
   board,
+  CLI_INSET,
   CLI_ROWS,
   cliLayout,
   codeBlocks,
   emptyStatus,
   figureSvg,
   fromUsage,
+  inkOf,
   layout,
   paneLines,
   parseCapture,
@@ -35,17 +39,20 @@ import {
   shortPath,
   upgrade,
   vscodeColor,
+  ZONE_BORDER,
   ZONE_GAP,
+  ZONE_MARGIN,
   zoneColors,
 } from './status'
-import type { BoardQuota, CodeBlock, Row, Seg } from './status'
+import type { BoardQuota, CodeBlock, Meter, Row, Seg, TLevel, TSegColor } from './status'
 
 // Observe-only: it never denies or rewrites an event, calls a model, or adds a tool or prompt text.
-// The two pickers change the session through the engine's own paths: the `/config` Model row and
-// the built-in `/effort` command, exactly as the person would. Copy and Actions write only the
-// clipboard, open this mod's panes, or run the built-in `/copy` (the terminal's Copy) or `/diff`.
-// VS Code draws a read-only dashboard instead: no picker, Copy or Actions; the extension's own
-// selectors own the model and effort there.
+// The two pickers change the session through the engine's own paths: the `/config` Model row (and
+// in VS Code the built-in `/model`) and the built-in `/effort`, exactly as the person would. Copy
+// and Actions write only the clipboard, open this mod's panes, or run the built-in `/copy` (the
+// terminal's Copy) or `/diff`.
+// VS Code draws its own dashboard: the same two pickers, no Copy or Actions; the extension's own
+// selectors work beside them.
 
 const status = atom({ plugin: 'nth-status', key: 'status' } as const, null)
 const PANE = 'nth-status'
@@ -183,21 +190,27 @@ async function refreshModel($: EngineInterface): Promise<void> {
   let isSwitched = false
   await change($, s => {
     // Effort is kept per model: a switch shows the new model's setting until a request confirms it.
+    // VS Code's `/effort` holds for the session, though: its level stays through a switch (checked
+    // on 2.1.314).
     isSwitched = s.model !== null && s.model !== model
-    return { ...s, model, modelRow, ...(isSwitched ? { effort: null } : {}) }
+    return { ...s, model, modelRow, ...(isSwitched && !(isVscodeAttached && hasEffortRun) ? { effort: null } : {}) }
   })
-  if (isSwitched) await quietly(refreshEffortSetting($))
+  if (isSwitched) await quietly(refreshEffortSetting($, true))
 }
 
 /** The level the settings gave at the last read: a change of it shows at once. */
 let settingsLevel: string | null = null
 
+/** A `/effort` set a level in this process. */
+let hasEffortRun = false
+
 /**
  * The effort the settings give this session's model: the inline `flag` layer's `effortLevel` (where
  * VS Code's own selector writes; it outranks the files), else its `modelSettings` entry, else
- * `effortLevel`. Shown while no request has reported one, and whenever the settings change.
+ * `effortLevel`. Shown while no request has reported one, and whenever the settings change; a model
+ * switch changes which entry they give, not what they say.
  */
-async function refreshEffortSetting($: EngineInterface): Promise<void> {
+async function refreshEffortSetting($: EngineInterface, isSwitch = false): Promise<void> {
   const model = await $.session.model()
   const flag = (await $.settings.read({ source: 'flag' })).effortLevel
   const perModel = await $.settings.read({ key: 'modelSettings' })
@@ -207,7 +220,7 @@ async function refreshEffortSetting($: EngineInterface): Promise<void> {
   const level =
     typeof flag === 'string' ? flag : typeof own === 'string' ? own : await $.settings.read({ key: 'effortLevel' })
   if (typeof level !== 'string') return
-  const isChanged = settingsLevel !== null && settingsLevel !== level
+  const isChanged = !isSwitch && settingsLevel !== null && settingsLevel !== level
   settingsLevel = level
   await change($, s => (s.effort === null || (isChanged && s.effort !== level) ? { ...s, effort: level } : s))
 }
@@ -372,10 +385,36 @@ async function openPane($: EngineInterface): Promise<void> {
   await $.ui.open({ id: PANE, title: 'nth-status', focus: true, closeOnEscape: true })
 }
 
+/** What the last `/model` named, typed or run by a pick; null until one ran. */
+let lastModelRun: string | null = null
+
+/**
+ * A pick in VS Code. Its session loop holds a model of its own once the extension's selector set
+ * one, and takes a new one only from a `/model` that changes the last value `/model` gave: the
+ * `/config` row alone reports the new model while requests stay on the old (checked on 2.1.314). So
+ * a pick the last `/model` already named first names what is in force. Each run leaves a row in the
+ * transcript, as a typed `/model` does, so none runs that is not needed. False when it refused.
+ */
+async function switchVscodeModel($: EngineInterface, value: string): Promise<boolean> {
+  const row = (await $.config.list()).find(r => r.key === 'model')
+  const inForce = row?.value == null ? null : String(row.value)
+  if (inForce === value) return true
+  if (lastModelRun === value) await $.command.run({ command: 'model', args: inForce && row?.options?.includes(inForce) ? inForce : 'default' })
+  const text = (await $.command.run({ command: 'model', args: value })).text ?? ''
+  if (text.trim() && !/^(Set|Kept) model\b/.test(text)) {
+    $.ui.toast(`Model not changed: ${text}`)
+    return false
+  }
+  lastModelRun = value
+  return true
+}
+
 async function pickModel($: EngineInterface, value: string): Promise<void> {
   try {
-    const set = await $.config.set({ key: 'model', value })
-    if ('deny' in set && set.deny) $.ui.toast(`Model not changed: ${set.deny}`)
+    if (!isVscodeAttached || (await switchVscodeModel($, value))) {
+      const set = await $.config.set({ key: 'model', value })
+      if ('deny' in set && set.deny) $.ui.toast(`Model not ${isVscodeAttached ? 'saved' : 'changed'}: ${set.deny}`)
+    }
   } catch (error) {
     $.ui.toast(`Model not changed: ${String(error)}`)
   }
@@ -389,6 +428,7 @@ async function pickEffort($: EngineInterface, value: string): Promise<void> {
     // The engine's next request confirms it (turn.step); until then show what /effort set.
     const level = effortSet(value, text)
     if (level) {
+      hasEffortRun = true
       await change($, s => ({ ...s, effort: level }))
     } else {
       $.ui.toast(`Effort not changed${text ? `: ${text}` : ''}`)
@@ -667,10 +707,8 @@ const SHARES = { context: 40, meta: 23, quota: 37 } as const
  * takes, so the block keeps its place while it has no reading yet.
  */
 const QUOTA_MIN = 23
-/** A meter row's neutral track and fill (gray with alpha, both themes); a cached reading's fill at half. */
+/** A meter row's neutral track (gray with alpha, both themes), under its level's fill. */
 const TRACK = '#80808014'
-const FILL = '#80808033'
-const FILL_CACHED = '#8080801a'
 /** Rows are framed alike, meter or not: rounded, with a border no one sees. */
 const CLEAR = '#00000000'
 /**
@@ -692,6 +730,8 @@ const ICON_ALTS = { cache: '🛢️', warm: '🔥', cold: '⌛', prompts: '💬'
 const VS_PATH_MAX = 60
 /** Characters of the panel's text a column holds, about: a column is 9.2 px, a character some 7. */
 const CHARS_PER_COLUMN = 1.25
+/** Characters a picker Button takes beyond its label: its ` ▾`, padding and border. */
+const VS_CHIP = 5
 
 /**
  * The widths that take a fill of `pct` % (whole) back to its row's whole width, outermost first:
@@ -708,19 +748,21 @@ function widen(pct: number): string[] {
 }
 
 /**
- * The header (path and branch; model and effort as text) and three blocks below it, inside the
+ * The header (path and branch; the Model and Effort pickers) and three blocks below it, inside the
  * panel's own frame: Context, Prompt and Session, the 5h and 7d quotas, each block two rows. A
- * meter row is its own background meter, a neutral fill over a neutral track with its figures
- * drawn above. Severity alone is colored; everything else is the panel's text colors.
+ * meter row is its own background meter, its level's fill over a neutral track with its figures
+ * drawn above. Levels alone are colored; everything else is the panel's text colors. The panel
+ * flattens a Button's children to their text, so a Button's own `dimColor` marks it here: an
+ * outlined chip, against the filled one of the current choice.
  */
-function vscodeBand(el: ElementTable<'vscode'>, value: Status, now: number, columns: number): RenderNode {
-  const { Box, Text, Svg } = el
+function vscodeBand($: EngineInterface, el: ElementTable<'vscode'>, value: Status, now: number, columns: number): RenderNode {
+  const { Box, Text, Svg, Button } = el
   const shown = board(value, now)
   const muted = { color: 'inactive' } as const
   const metrics = columns < VS_STACKED ? LOW_ROW : ROW
 
-  const figure = (key: string, text: string, color: string | null, isFaded = false) => {
-    const { source, width } = figureSvg(text, color, isFaded)
+  const figure = (key: string, text: string, level: TLevel | null, isFaded = false) => {
+    const { source, width } = figureSvg(text, level, isFaded)
     return <Svg key={key} source={source} alt={text} width={width} height={FIGURE_HEIGHT} />
   }
   // An icon not drawn (the panel can refuse a picture for a while) shows its alt: the emoji it stands for.
@@ -748,8 +790,9 @@ function vscodeBand(el: ElementTable<'vscode'>, value: Status, now: number, colu
       {rest.length > 0 ? widened(rest, body) : line(body)}
     </Box>
   )
-  const row = (key: string, left: RenderChildren, right: RenderChildren, meter?: { pct: number | null; fill: string }) => {
-    const pct = meter?.pct == null ? 0 : Math.round(Math.min(100, meter.pct))
+  const row = (key: string, left: RenderChildren, right: RenderChildren, meter?: { reading: Meter | null; isCached?: boolean }) => {
+    const pct = meter?.reading == null ? 0 : Math.round(Math.min(100, meter.reading.pct))
+    const paint = meter?.reading ? VS_LEVELS[meter.reading.level] : null
     return (
       <Box
         key={key}
@@ -762,7 +805,7 @@ function vscodeBand(el: ElementTable<'vscode'>, value: Status, now: number, colu
         backgroundColor={meter ? TRACK : undefined}
       >
         {meter && pct > 0 ? (
-          <Box width={`${pct}%`} flexShrink={0} flexDirection="row" flexWrap="nowrap" backgroundColor={meter.fill}>
+          <Box width={`${pct}%`} flexShrink={0} flexDirection="row" flexWrap="nowrap" backgroundColor={meter.isCached ? paint?.cachedFill : paint?.fill}>
             {widened(widen(pct), figures(left, right))}
           </Box>
         ) : (
@@ -803,13 +846,13 @@ function vscodeBand(el: ElementTable<'vscode'>, value: Status, now: number, colu
   const context = block('context', [
     row(
       'context-use',
-      ctx.meter ? figure('context-pct', `${Math.round(ctx.meter.pct)}%`, SEVERITY[ctx.meter.tone]) : known('context-pct', null),
+      ctx.meter ? figure('context-pct', `${Math.round(ctx.meter.pct)}%`, ctx.meter.level) : known('context-pct', null),
       ctx.tokens !== null && (
         <Text key="tokens" {...muted}>
           {ctx.tokens}
         </Text>
       ),
-      { pct: ctx.meter?.pct ?? null, fill: FILL },
+      { reading: ctx.meter },
     ),
     // The cache as the mod tracked it from the session's requests (no capture arrives here): warm
     // with an estimate of its time left (`~`), `Cold` an hour after its last use, else `—`.
@@ -877,28 +920,61 @@ function vscodeBand(el: ElementTable<'vscode'>, value: Status, now: number, colu
           )
         ),
       ],
-      q ? figure(`${key}-pct`, `${Math.round(q.pct)}%`, SEVERITY[q.tone], q.age !== null) : known(`${key}-pct`, null),
-      { pct: q?.pct ?? null, fill: q?.age != null ? FILL_CACHED : FILL },
+      q ? figure(`${key}-pct`, `${Math.round(q.pct)}%`, q.level, q.age !== null) : known(`${key}-pct`, null),
+      { reading: q, isCached: q?.age != null },
     )
   const quota = block('quota', [window('five', '5h', five), window('seven', '7d', seven)], QUOTA_MIN)
 
   const branch = value.branch
-  const model = value.model === null ? null : [shortModel(value.model), ...(value.hasEffort ? [effortLabel(value.effort)] : [])].join(' · ')
-  // One row: the path takes what the branch and the model leave; past that, the model wraps below.
+  const model = value.model === null ? null : shortModel(value.model)
+  const effort = value.model !== null && value.hasEffort ? effortLabel(value.effort) : null
+  const trigger = (kind: TPicker, label: string) => (
+    <Button key={kind} dimColor onPress={() => void togglePicker($, kind)}>
+      {`${label} ${picker === kind ? '▴' : '▾'}`}
+    </Button>
+  )
+  // One row: the path takes what the branch and the pickers leave; past that, the pickers wrap below.
   const room =
-    Math.floor(columns * CHARS_PER_COLUMN) - (branch ? branch.name.length + (branch.isWorktree ? 12 : 3) : 0) - (model ? model.length + 4 : 0)
+    Math.floor(columns * CHARS_PER_COLUMN) -
+    (branch ? branch.name.length + (branch.isWorktree ? 12 : 3) : 0) -
+    (model ? model.length + VS_CHIP + 4 : 0) -
+    (effort ? effort.length + VS_CHIP : 0)
   const folder = value.folder ? shortPath(value.folder, Math.max(12, Math.min(VS_PATH_MAX, room))) : null
+  const choices = pickerChoices(value)
   return (
     <Box flexDirection="column" rowGap={0.3}>
-      <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={1.5}>
+      <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1.5}>
         <Text wrap="truncate-end">
           {folder !== null && <Text bold>{folder}</Text>}
           {folder !== null && branch && <Text {...muted}>{' · '}</Text>}
           {branch?.name}
           {branch?.isWorktree && <Text {...muted}>{' worktree'}</Text>}
         </Text>
-        {model !== null && <Text {...muted}>{model}</Text>}
+        {model !== null &&
+          group('pickers', [
+            // A picker that cannot change anything is plain text, never a dead control.
+            value.modelRow && !value.modelRow.isLocked ? (
+              trigger('model', model)
+            ) : (
+              <Text key="model-text" {...muted}>
+                {model}
+              </Text>
+            ),
+            effort !== null && trigger('effort', effort),
+          ])}
       </Box>
+      {choices && (
+        <Box key="picker" flexDirection="row" flexWrap="wrap" columnGap={0.4} rowGap={0.2}>
+          {choices.options.map(option => (
+            <Button key={`pick:${option.value}`} dimColor={!option.isCurrent} onPress={() => void choose($, choices.kind, option.value)}>
+              {option.isCurrent ? `● ${option.label}` : option.label}
+            </Button>
+          ))}
+          <Button key="pick:cancel" dimColor onPress={() => void closePicker($)}>
+            Cancel
+          </Button>
+        </Box>
+      )}
       <Box flexDirection="row" flexWrap="wrap" columnGap={0.4} rowGap={0.2}>
         {context}
         {meta}
@@ -930,6 +1006,7 @@ export const register: Register = on => {
       captured = { sessionId: '', prompt: null }
       codeChoice = null
       picker = null
+      hasEffortRun = false
     }
     return ended
   })
@@ -1068,10 +1145,14 @@ export const register: Register = on => {
   on('command.run', { command: /^(model|effort)$/ }, async ($, e, next) => {
     const ran = await next(e)
     if (e.command === 'model') {
+      if (e.args.trim()) lastModelRun = e.args.trim()
       void quietly(refreshModel($))
     } else {
       const level = effortSet(e.args.trim().toLowerCase(), ran.text ?? '')
-      if (level) await quietly(change($, s => ({ ...s, effort: level })))
+      if (level) {
+        hasEffortRun = true
+        await quietly(change($, s => ({ ...s, effort: level })))
+      }
     }
     return ran
   }).catch(($, e, next) => next(e))
@@ -1103,7 +1184,8 @@ export const register: Register = on => {
   // An open row closes when the band's ring moves to a control it does not own: Tab or an arrow
   // away, a click on another control, or on any other part of the band (which puts the ring on its
   // first control). Claude Code raises nothing for Esc or a click outside the band (2.1.310), so
-  // those leave the row open; the next prompt closes it.
+  // those leave the row open; the next prompt closes it. VS Code's panel raises no focus at all
+  // (2.1.314): its row stays until a choice, Cancel, a second press or the next prompt.
   on('ui.focus', { component: 'AbovePrompt' }, async ($, e, next) => {
     const moved = await next(e)
     if (picker && e.element !== undefined && !OWNED[picker].test(e.element)) {
@@ -1120,32 +1202,41 @@ export const register: Register = on => {
     const value = await shown($)
     if (!value) return below
     const now = await $.clock.now()
-    // VS Code's panel draws in the editor's own theme and frames the band itself: its own read-only
-    // dashboard there.
+    // VS Code's panel draws in the editor's own theme and frames the band itself: its own dashboard
+    // there.
     if (e.surface === 'vscode') {
       const vscode = $.ui.resolve(e)
       return (
         <vscode.Box flexDirection="column" rowGap={0.5}>
           {below}
-          {vscodeBand(vscode, value, now, e.props.bodyColumns)}
+          {vscodeBand($, vscode, value, now, e.props.bodyColumns)}
         </vscode.Box>
       )
     }
     const elements = $.ui.resolve(e)
     const { Box, Text, Button } = elements
-    // The terminal's dashboard (a header, three zones side by side, a footer) in one rounded panel,
-    // where the zones fit side by side and its rows fit with other bands' room kept; else, and in
-    // the desktop app, the compact rows: a rounded panel where it fits, else the bare rows.
-    const cli = e.surface === 'terminal' ? cliLayout(value, now, e.props.bodyColumns - PANEL_COLUMNS) : null
-    const isZoned = cli !== null && e.props.maxRows >= CLI_ROWS + (picker ? 1 : 0) + 2 + taskBandRows(e.props.maxRows)
-    const inside = layout(value, now, e.props.bodyColumns - PANEL_COLUMNS)
+    // The terminal's dashboard (a header with the controls, three bordered zones side by side, a
+    // footer while it has something to show), where the zones fit side by side and its rows fit with
+    // other bands' room kept; else, and in the desktop app, the compact rows: a rounded panel where
+    // it fits, else the bare rows.
+    const cli = e.surface === 'terminal' ? cliLayout(value, now, e.props.bodyColumns) : null
+    const isZoned = cli !== null && e.props.maxRows >= CLI_ROWS + (picker ? 1 : 0) + taskBandRows(e.props.maxRows)
+    const isTerminal = e.surface === 'terminal'
+    const inside = layout(value, now, e.props.bodyColumns - PANEL_COLUMNS, isTerminal)
     const isPanel =
       isZoned ||
       (e.props.bodyColumns - PANEL_COLUMNS >= PANEL_MIN_COLUMNS &&
         e.props.maxRows >= inside.rows.length + (picker ? 1 : 0) + 2 + taskBandRows(e.props.maxRows))
-    const { rows } = isPanel ? inside : layout(value, now, e.props.bodyColumns)
+    const { rows } = isPanel ? inside : layout(value, now, e.props.bodyColumns, isTerminal)
     const theme = isPanel ? await $.settings.read({ key: 'theme' }) : undefined
     const fill = isPanel ? panelFill(theme) : undefined
+    const colors = isPanel ? zoneColors(theme) : undefined
+    // A control's label, in the same ink as the text around it.
+    const labelled = (text: string, run: { color?: TSegColor; isDim?: boolean } = {}) => (
+      <Text color={inkOf(run, colors)} dimColor={run.isDim && !colors}>
+        {text}
+      </Text>
+    )
 
     bandId = e.requestId
     const choices = pickerChoices(value)
@@ -1157,61 +1248,67 @@ export const register: Register = on => {
       if (seg.kind === 'model' && value.modelRow && !value.modelRow.isLocked && value.model) {
         return (
           <Button key="model" plain onPress={() => void togglePicker($, 'model')}>
-            {`${shortModel(value.model)} ${picker === 'model' ? '▴' : '▾'}`}
+            {labelled(`${shortModel(value.model)} ${picker === 'model' ? '▴' : '▾'}`)}
           </Button>
         )
       }
       if (seg.kind === 'effort' && value.hasEffort) {
         return (
           <Button key="effort" plain onPress={() => void togglePicker($, 'effort')}>
-            {`${effortLabel(value.effort)} ${picker === 'effort' ? '▴' : '▾'}`}
+            {labelled(`${effortLabel(value.effort)} ${picker === 'effort' ? '▴' : '▾'}`)}
           </Button>
         )
       }
       if (seg.kind === 'agents') {
         return (
           <Button key="agents" plain onPress={() => void openPane($)}>
-            <Text color="suggestion">{seg.text}</Text>
+            {labelled(seg.text, { color: 'suggestion' })}
           </Button>
         )
       }
       // Copy is the primary action, Actions a secondary menu button: the terminal draws both as
       // `[ label ]`, the primary in the accent color, and inverts either under the pointer or ring.
-      // A terminal press is the built-in `/copy`, run as if typed; elsewhere the response goes to
-      // the pressing surface's clipboard.
+      // Those brackets keep the terminal's default foreground, lost on a raw fill, so there a plain
+      // Button draws its own. A terminal press is the built-in `/copy`, run as if typed; elsewhere
+      // the response goes to the pressing surface's clipboard.
+      const isSelfFramed = isTerminal && colors !== undefined
       if (seg.kind === 'copy') {
         return (
           <Button
             key="copy"
-            variant="primary"
+            {...(isSelfFramed ? { plain: true } : { variant: 'primary' })}
             onPress={press =>
               void safely($, 'Copy', () =>
                 press.surface === 'terminal' ? runCopyCommand($) : copyResponse($, press.surface),
               )
             }
           >
-            Copy
+            {isSelfFramed ? labelled('[ Copy ]', { color: 'suggestion' }) : 'Copy'}
           </Button>
         )
       }
       if (seg.kind === 'actions') {
+        // The terminal's is one glyph: the row it opens says it is open.
+        const label = isTerminal ? ICONS.actions : `Actions ${picker === 'actions' ? '▴' : '▾'}`
         return (
-          <Button key="actions" variant="secondary" onPress={() => void togglePicker($, 'actions')}>
-            {`Actions ${picker === 'actions' ? '▴' : '▾'}`}
+          <Button key="actions" {...(isSelfFramed ? { plain: true } : { variant: 'secondary' })} onPress={() => void togglePicker($, 'actions')}>
+            {isSelfFramed ? labelled(`[ ${label} ]`) : label}
           </Button>
         )
       }
       if (seg.kind === 'folder') {
         return (
           <Button key="folder" plain onPress={() => void togglePicker($, 'folder')}>
-            <Text bold>{seg.text}</Text>
+            <Text bold color={inkOf({}, colors)}>
+              {seg.text}
+            </Text>
           </Button>
         )
       }
       // A picker that cannot change anything is plain text, never a dead control.
       const text = seg.kind === 'model' || seg.kind === 'effort' ? seg.text.replace(/ ▾$/, '') : seg.text
       return (
-        <Text color={seg.color} dimColor={seg.isDim} bold={seg.isBold} wrap="truncate-end">
+        <Text color={inkOf(seg, colors)} dimColor={seg.isDim && !colors} bold={seg.isBold} wrap="truncate-end">
           {text}
         </Text>
       )
@@ -1225,7 +1322,7 @@ export const register: Register = on => {
           {row.groups.flatMap((group, i) => (i === 0 ? spaced(group) : [<Text dimColor> │ </Text>, ...spaced(group)]))}
         </Box>
         {row.right.length > 0 && (
-          <Box flexDirection="row">
+          <Box flexDirection="row" flexShrink={0}>
             <Text> </Text>
             {spaced(row.right)}
           </Box>
@@ -1239,33 +1336,39 @@ export const register: Register = on => {
       <Box key="picker" flexDirection="row" flexWrap="wrap" columnGap={2}>
         {choices.options.map(option => (
           <Button key={`pick:${option.value}`} plain onPress={() => void choose($, choices.kind, option.value)}>
-            {option.isCurrent ? <Text bold>{`● ${option.label}`}</Text> : option.label}
+            {option.isCurrent ? (
+              <Text bold color={inkOf({}, colors)}>
+                {`● ${option.label}`}
+              </Text>
+            ) : (
+              labelled(option.label)
+            )}
           </Button>
         ))}
         <Button key="pick:cancel" plain onPress={() => void closePicker($)}>
-          <Text dimColor>Cancel</Text>
+          {labelled('Cancel', { isDim: true })}
         </Button>
       </Box>
     )
-    // The Actions menu, under the session row: one Button per action; while Copy code offers several
-    // blocks, one per block instead, then Cancel.
+    // The Actions menu, under the row holding its control: one Button per action; while Copy code
+    // offers several blocks, one per block instead, then Cancel.
     const blocks = codeChoice
     const menuRow = picker === 'actions' && (
       <Box key="menu" flexDirection="row" flexWrap="wrap" columnGap={2} justifyContent="flex-end">
         {blocks
           ? blocks.map((block, i) => (
               <Button key={`code:${i}`} plain onPress={press => void (closePicker($), safely($, 'Copy code', () => copyCode($, block, press.surface)))}>
-                {blockLabel(block, i)}
+                {labelled(blockLabel(block, i))}
               </Button>
             ))
           : MENU.map(item => (
               <Button key={`act:${item.value}`} plain onPress={press => void safely($, item.label, () => runAction($, item.value, press.surface))}>
-                {item.label}
+                {labelled(item.label)}
               </Button>
             ))}
         {blocks && (
           <Button key="code:cancel" plain onPress={() => void closePicker($)}>
-            <Text dimColor>Cancel</Text>
+            {labelled('Cancel', { isDim: true })}
           </Button>
         )}
       </Box>
@@ -1275,36 +1378,46 @@ export const register: Register = on => {
     const folderRow = picker === 'folder' && value.folder && (
       <Box key="folder-detail" flexDirection="row" columnGap={2}>
         <Box flexShrink={1}>
-          <Text wrap="wrap">{value.folder}</Text>
+          <Text wrap="wrap" color={inkOf({}, colors)}>
+            {value.folder}
+          </Text>
         </Box>
         <Box flexDirection="row" flexShrink={0} columnGap={2}>
           <Button key="path:copy" plain onPress={press => void (closePicker($), copyText($, value.folder!, press.surface, 'path'))}>
-            Copy path
+            {labelled('Copy path')}
           </Button>
           <Button key="path:close" plain onPress={() => void closePicker($)}>
-            <Text dimColor>Close</Text>
+            {labelled('Close', { isDim: true })}
           </Button>
         </Box>
       </Box>
     )
 
-    // Each zone row is painted cell by cell: the zone's tint, a meter's neutral fill under its first
-    // cells, the figures over both (the terminal draws no layers).
-    const colors = zoneColors(theme)
+    // Each zone is its own bordered block, its rows painted cell by cell: the zone's tint, a meter's
+    // level under its first cells, the figures over both (the terminal draws no layers).
     if (isZoned && cli) {
       return (
         <Box flexDirection="column">
           {below}
-          <Box flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1} {...(fill ? { backgroundColor: fill } : {})}>
-            {drawRow(cli.header)}
-            {pickerRow || folderRow}
-            <Box key="zones" flexDirection="row" columnGap={ZONE_GAP}>
+          <Box flexDirection="column" {...(fill ? { backgroundColor: fill } : {})}>
+            <Box flexDirection="column" paddingX={CLI_INSET}>
+              {drawRow(cli.header)}
+              {pickerRow || folderRow || menuRow}
+            </Box>
+            <Box key="zones" flexDirection="row" columnGap={ZONE_GAP} paddingX={ZONE_MARGIN}>
               {cli.zones.map(zone => (
-                <Box key={zone.key} flexDirection="column" width={zone.width} flexShrink={0}>
+                <Box
+                  key={zone.key}
+                  flexDirection="column"
+                  width={zone.width + ZONE_BORDER}
+                  flexShrink={0}
+                  borderStyle="round"
+                  borderColor={colors?.borders[zone.key] ?? 'subtle'}
+                >
                   {zone.rows.map(row => (
                     <Text key={row.key} wrap="truncate-end">
-                      {paintRow(row, zone.width, colors?.[zone.key], colors?.fill).map((run, i) => (
-                        <Text key={`${row.key}-${i}`} color={run.color} backgroundColor={run.bg} bold={run.isBold} dimColor={run.isDim}>
+                      {paintRow(row, zone.width, colors?.[zone.key], row.level && colors?.levels[row.level].fill).map((run, i) => (
+                        <Text key={`${row.key}-${i}`} color={inkOf(run, colors)} backgroundColor={run.bg} bold={run.isBold} dimColor={run.isDim && !colors}>
                           {run.text}
                         </Text>
                       ))}
@@ -1313,8 +1426,11 @@ export const register: Register = on => {
                 </Box>
               ))}
             </Box>
-            {drawRow(cli.footer)}
-            {menuRow}
+            {cli.footer && (
+              <Box flexDirection="column" paddingX={CLI_INSET}>
+                {drawRow(cli.footer)}
+              </Box>
+            )}
           </Box>
         </Box>
       )
@@ -1366,7 +1482,7 @@ export const register: Register = on => {
             <Box flexShrink={0} {...(isVscode ? { width: 10 } : {})}>
               <Text {...muted}>{line.label.padEnd(9)}</Text>
             </Box>
-            <Text color={isVscode ? vscodeColor(line.color) : line.color} wrap="truncate-end">
+            <Text color={line.level ? (isVscode ? VS_LEVELS[line.level].text : inkOf(line, undefined)) : isVscode ? vscodeColor(line.color) : line.color} wrap="truncate-end">
               {line.value}
             </Text>
           </Box>

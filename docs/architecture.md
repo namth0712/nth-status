@@ -5,7 +5,7 @@ draws the band and the pane), plus one silent status line script. It only
 observes: it never denies or rewrites a tool call, prompt, spawn or model
 request, adds no tool or prompt text, and makes no model call. The pickers
 change the session only through Claude Code's own `/config` Model row and
-`/effort` command.
+`/effort` command, and in VS Code its `/model` command as well.
 
 ## Source layout
 

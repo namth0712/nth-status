@@ -31,6 +31,8 @@ type World = {
   capturePath?: string
   configDenies?: string
   effortText?: string
+  /** What `/model` answers instead of switching: a refusal. */
+  modelRefusal?: string
   configSets: { key: string; value: unknown }[]
   commands: { command: string; args: string }[]
   toasts: string[]
@@ -152,6 +154,12 @@ function engine(on: On, world: World) {
   on('command.register', ($, e) => ({ value: { command: e.name } }) as never)
   on('command.run', ($, e) => {
     world.commands.push({ command: e.command, args: e.args })
+    if (e.command === 'model') {
+      if (world.modelRefusal) return { text: world.modelRefusal } as never
+      if (world.modelRow) world.modelRow.value = e.args
+      world.model = `claude-${e.args}-5-5`
+      return { text: `Set model to \`${e.args}\` for this session only` } as never
+    }
     return { text: world.effortText ?? `Set effort level to ${e.args} (this session only): …` } as never
   })
   on('ui.open', ($, e) => {
@@ -355,7 +363,7 @@ describe('time and cost', () => {
     expect(await band($)).toMatch(/Prompt\s*0s/)
   })
 
-  test('the band is one rounded panel below another band', async ($, on) => {
+  test('the band sits below another band: three bordered zones, one panel, or bare rows, as the height allows', async ($, on) => {
     on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
       const { Text } = $.ui.resolve(e)
       return <Text>inner band</Text>
@@ -364,7 +372,7 @@ describe('time and cost', () => {
     await start($, clock)
     const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'AbovePrompt', props: PROPS(100, 10) })
     const panels = (await ui.findAll({ type: 'Box' })).filter(found => found.props.borderStyle === 'round')
-    expect(panels.length).toBe(1)
+    expect(panels.map(found => found.key)).toEqual(['context', 'meta', 'quota'])
     const texts = (await ui.findAll({ type: 'Text' })).map(found => found.text).join('')
     await ui.unmount()
     expect(texts.indexOf('inner band')).toBe(0)
@@ -581,7 +589,7 @@ describe('terminal zones', () => {
   /** The painted runs whose text is exactly `part`. */
   const runsWith = async (ui: TBand, part: string) => (await ui.findAll({ type: 'Text' })).filter(found => found.text === part)
 
-  test('header, three zones and footer in one rounded panel, the same height as before', async ($, on) => {
+  test('a header with the controls and three bordered zones, a footer only with something to show', async ($, on) => {
     const world = fullWorld()
     world.theme = 'dark'
     world.usage.context = { window: 200_000, percent: 42, tokens: 84_000 }
@@ -591,31 +599,43 @@ describe('terminal zones', () => {
     world.usage.cost = { usd: 9.0 }
     await $.turn.complete(ended(395_000))
     const ui = await zoned($)
-    expect((await ui.findAll({ type: 'Box' })).filter(found => found.props.borderStyle === 'round').length).toBe(1)
+    // Each zone its own frame, in its own hue; no frame around them.
+    const frames = (await ui.findAll({ type: 'Box' })).filter(found => found.props.borderStyle === 'round')
+    expect(frames.map(found => [found.key, found.props.borderColor])).toEqual([
+      ['context', '#46556e'],
+      ['meta', '#54496c'],
+      ['quota', '#3f5e59'],
+    ])
     const rows = await zoneRows(ui)
     expect(rows).not.toBeNull()
     const [context, meta, quota] = [rows!.context!, rows!.meta!, rows!.quota!]
     expect(context[0]).toMatch(/^ 42% +84k\/200k $/)
-    expect(context[1]).toMatch(/^ ⛁ — +↻ 0 $/)
+    expect(context[1]).toMatch(/^ DB — +↻ 0 $/)
     expect(meta[0]).toMatch(/^ Last 6m35s +~\$0\.58 $/)
     expect(meta[1]).toMatch(/^ Session \d+✉ 2h11m +~\$9\.00 $/)
     expect(quota[0]).toMatch(/^ 5h 2h30m \d\d:\d\d +68% $/)
     expect(quota[1]).toMatch(/^ 7d 3d0h (Sun|Mon|Tue|Wed|Thu|Fri|Sat) \d\d:\d\d +35% $/)
-    // Rows fill their zone exactly; the zones and their gaps fill the panel's inside.
+    // Rows fill their zone's inside exactly; the zones, their gaps and an even margin fill the band's width.
     const widths = await Promise.all(['context', 'meta', 'quota'].map(async key => (await ui.find({ key }))?.props.width as number))
-    for (const [i, key] of ['context', 'meta', 'quota'].entries()) for (const row of rows![key]!) expect([...row].length).toBe(widths[i])
-    expect(widths.reduce((sum, w) => sum + w, 0) + 2).toBe(96)
-    // The header keeps the folder, branch and both pickers; the footer Copy and Actions.
+    for (const [i, key] of ['context', 'meta', 'quota'].entries()) for (const row of rows![key]!) expect([...row].length).toBe(widths[i]! - 2)
+    const zones = (await ui.find({ key: 'zones' }))?.props
+    expect([zones?.columnGap, zones?.paddingX]).toEqual([1, 1])
+    expect(widths.reduce((sum, w) => sum + w, 0) + 2 * 1 + 2 * 1).toBe(100)
+    // The header holds the folder, branch, both pickers, Copy and Actions; no footer with nothing to show.
     const keys = (await ui.findAll({ type: 'Button' })).map(found => found.key)
     expect(keys).toEqual(['folder', 'model', 'effort', 'copy', 'actions'])
-    // The terminal's own thresholds: context 50/80, quotas 60/85; percentages alone colored.
-    expect((await runsWith(ui, '42%'))[0]?.props.color).toBe('success')
-    expect((await runsWith(ui, '68%'))[0]?.props.color).toBe('warning')
-    expect((await runsWith(ui, '35%'))[0]?.props.color).toBe('success')
+    expect(await ui.find({ key: 'footer' })).toBeUndefined()
+    // The controls never give up room to a long branch: the branch is what truncates.
+    const holder = (await ui.findAll({ type: 'Box' })).find(found => found.children.some(child => (child as { props?: { key?: string } }).props?.key === 'actions'))
+    expect(holder?.props.flexShrink).toBe(0)
+    // A percentage and its fill take its level: 42 % Normal, 68 % Notice, 35 % Normal.
+    expect((await runsWith(ui, '42%'))[0]?.props.color).toBe('#6ee7a8')
+    expect((await runsWith(ui, '68%'))[0]?.props.color).toBe('#ffd866')
+    expect((await runsWith(ui, '35%'))[0]?.props.color).toBe('#6ee7a8')
     expect((await runsWith(ui, '~$9.00'))[0]?.props.color).toBe('merged')
-    // Each zone its own faint tint; a meter's neutral fill under its first cells, never a severity.
+    // Each zone its own faint tint; the meters' fills in their levels' colors.
     const bgs = (await ui.findAll({ type: 'Text' })).map(found => found.props.backgroundColor).filter(Boolean)
-    expect(new Set(bgs)).toEqual(new Set(['#232a36', '#2a2634', '#212d2c', '#3a404b']))
+    expect(new Set(bgs)).toEqual(new Set(['#232a36', '#2a2634', '#212d2c', '#1d4d38', '#524516']))
     await ui.unmount()
     expect(world.commands).toEqual([])
   })
@@ -650,7 +670,7 @@ describe('terminal zones', () => {
     await pressZoned('path:close')
     await pressZoned('actions')
     shown = await order()
-    expect(shown.keys).toEqual(['zones', 'menu'])
+    expect(shown.keys).toEqual(['menu', 'zones'])
     await pressZoned('act:session-info')
     expect(world.copies.at(-1)).toContain('acme-web-frontend')
     await pressZoned('copy')
@@ -676,10 +696,176 @@ describe('terminal zones', () => {
     expect((await compact(100, 6)).isZoned).toBe(false)
     expect((await compact(100, 10, 'desktop')).isZoned).toBe(false)
     expect((await compact(100, 10, 'desktop')).text).toContain('Ctx 42%')
-    // No theme to tint by: the zones without a fill.
+    // No theme to tint by: the zones without a fill, framed in the theme's own subtle color.
     const ui = await zoned($)
     expect((await ui.findAll({ type: 'Text' })).filter(found => found.props.backgroundColor !== undefined)).toEqual([])
+    expect((await ui.find({ key: 'context' }))?.props.borderColor).toBe('subtle')
     await ui.unmount()
+  })
+
+  /** The band's drawn text with no color of its own: left to the terminal's default foreground. */
+  const leftToTerminal = async (ui: TBand) =>
+    (await ui.findAll({ type: 'Text' })).filter(
+      found =>
+        found.text.trim() !== '' &&
+        found.children.every(child => typeof child === 'string') &&
+        found.props.color === undefined &&
+        found.props.dimColor !== true,
+    )
+
+  test('on a raw fill no text is left to the terminal’s foreground, which a light fill in a dark terminal loses', async ($, on) => {
+    const world = fullWorld()
+    world.agents = [{ id: 'a1', status: 'running', name: 'explorer', description: 'Find code', type: 'Explore' }]
+    const clock = engine(on, world)
+    await start($, clock)
+    await $.turn.start(turn())
+    await $.turn.complete(ended(395_000))
+    for (const theme of ['light', 'light-daltonized', 'dark', 'dark-daltonized']) {
+      world.theme = theme
+      // The dashboard, then the compact rows in their panel.
+      for (const [columns, rows] of [[100, 10], [60, 10]] as const) {
+        const ui = await zoned($, columns, rows)
+        expect(await leftToTerminal(ui)).toEqual([])
+        await ui.unmount()
+      }
+    }
+    // Every row that opens inside the panel, too.
+    world.theme = 'light'
+    for (const [open, close] of [['model', 'pick:cancel'], ['actions', 'actions'], ['folder', 'path:close']] as const) {
+      const pressZoned = async (key: string) => {
+        const ui = await zoned($, 100, 12)
+        await ui.press({ key })
+        await ui.unmount()
+      }
+      await pressZoned(open)
+      const ui = await zoned($, 100, 12)
+      expect(await leftToTerminal(ui)).toEqual([])
+      await ui.unmount()
+      await pressZoned(close)
+    }
+  })
+
+  test('with no fill the text keeps the terminal’s own foreground', async ($, on) => {
+    const world = fullWorld()
+    world.theme = 'auto'
+    const clock = engine(on, world)
+    await start($, clock)
+    const ui = await zoned($)
+    expect(await leftToTerminal(ui)).not.toEqual([])
+    expect((await ui.findAll({ type: 'Text' })).filter(found => found.props.color === 'text')).toEqual([])
+    await ui.unmount()
+  })
+
+  test('each level has its fill and its percentage, per theme family, with main text in the band’s own ink', async ($, on) => {
+    const world = fullWorld()
+    world.usage.rateLimits = [
+      { kind: 'five_hour', percentUsed: 68, resetsAt: new Date(NOW + 150 * MIN).toISOString() },
+      { kind: 'seven_day', percentUsed: 80, resetsAt: new Date(NOW + 3 * 1440 * MIN).toISOString() },
+    ]
+    world.usage.context = { window: 1_000_000, percent: 90, tokens: 900_000 }
+    const clock = engine(on, world)
+    await start($, clock)
+    // Context 90 % Critical, 5h 68 % Notice, 7d 80 % Warning.
+    for (const [theme, critical, notice, warning, ink] of [
+      ['light', ['#f8c0bc', '#9e1220'], ['#f6e39b', '#735400'], ['#fbcfa3', '#a03f00'], '#1b2a4a'],
+      ['light-daltonized', ['#f8c0bc', '#9e1220'], ['#f6e39b', '#735400'], ['#fbcfa3', '#a03f00'], '#1b2a4a'],
+      ['dark', ['#60272b', '#ff8a80'], ['#524516', '#ffd866'], ['#5e3a14', '#ffa94d'], '#f2f5f9'],
+      ['dark-daltonized', ['#60272b', '#ff8a80'], ['#524516', '#ffd866'], ['#5e3a14', '#ffa94d'], '#f2f5f9'],
+    ] as const) {
+      world.theme = theme
+      const ui = await zoned($)
+      for (const [pct, level] of [['90%', critical], ['68%', notice], ['80%', warning]] as const) {
+        const [run] = await runsWith(ui, pct)
+        expect(run?.props.color).toBe(level[1])
+      }
+      const bgs = (await ui.findAll({ type: 'Text' })).map(found => found.props.backgroundColor)
+      for (const level of [critical, notice, warning]) expect(bgs).toContain(level[0])
+      const leaf = (await ui.findAll({ type: 'Text' })).find(found => found.children.every(child => typeof child === 'string') && found.text.includes('2h30m'))
+      expect(leaf?.props.color).toBe(ink)
+      await ui.unmount()
+    }
+    // The compact rows' percentages take the same colors.
+    world.theme = 'light'
+    const compact = await zoned($, 60, 10)
+    expect((await runsWith(compact, '68%'))[0]?.props.color).toBe('#735400')
+    await compact.unmount()
+    // No fill of its own: the theme's keys, all four distinct.
+    world.theme = 'auto'
+    const plain = await zoned($)
+    expect((await runsWith(plain, '90%'))[0]?.props.color).toBe('error')
+    expect((await runsWith(plain, '68%'))[0]?.props.color).toBe('warning')
+    expect((await runsWith(plain, '80%'))[0]?.props.color).toBe('claude')
+    await plain.unmount()
+  })
+
+  test('the daltonized themes draw the lowest level blue, as their own success is', async ($, on) => {
+    const world = fullWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    for (const [theme, fill, text] of [
+      ['light-daltonized', '#bcdcf2', '#00558a'],
+      ['dark-daltonized', '#1b3f5e', '#7cc4ff'],
+    ] as const) {
+      world.theme = theme
+      const ui = await zoned($)
+      expect((await runsWith(ui, '42%'))[0]?.props.color).toBe(text)
+      expect((await ui.findAll({ type: 'Text' })).map(found => found.props.backgroundColor)).toContain(fill)
+      await ui.unmount()
+    }
+  })
+
+  test('a warm cache shows its flame, two cells wide: the row still fills its zone exactly', async ($, on) => {
+    const world = fullWorld()
+    world.theme = 'light'
+    world.statusLine = { type: 'command', command: 'sh /cfg/nth-dev-kit-hooks/nth-status-statusline.sh' }
+    world.capture = { session_id: 'S1', prompt_cache: { warm: true, expires_at: (NOW + 17 * MIN) / 1000 } }
+    const clock = engine(on, world)
+    await start($, clock)
+    const ui = await zoned($)
+    const rows = await zoneRows(ui)
+    expect(rows!.context![1]).toMatch(/^ DB 17m 🔥 +↻ 0 $/)
+    const width = (await ui.find({ key: 'context' }))?.props.width as number
+    expect([...rows!.context![1]!].length + 1).toBe(width - 2)
+    await ui.unmount()
+  })
+
+  test('the footer holds Remote Control and the agents, only while there is one', async ($, on) => {
+    const world = fullWorld()
+    world.agents = [{ id: 'a1', status: 'running', name: 'explorer', description: 'Find code', type: 'Explore' }]
+    const clock = engine(on, world)
+    await start($, clock)
+    const ui = await zoned($)
+    const keys = (await ui.findAll({ type: 'Button' })).map(found => found.key)
+    expect(keys).toEqual(['folder', 'model', 'effort', 'copy', 'actions', 'agents'])
+    await ui.press({ key: 'agents' })
+    expect(world.opened).toEqual(['nth-status'])
+    await ui.unmount()
+  })
+
+  test('Copy and Actions keep their brackets in the panel’s ink on a fill; a surface’s own button elsewhere', async ($, on) => {
+    const world = fullWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    const controls = async (surface: 'terminal' | 'desktop') => {
+      const ui = await zoned($, 100, 10, surface)
+      const found = await Promise.all(['copy', 'actions'].map(key => ui.find({ key })))
+      await ui.unmount()
+      return found.map(button => ({ text: button?.text, plain: button?.props.plain, variant: button?.props.variant }))
+    }
+    world.theme = 'light'
+    expect(await controls('terminal')).toEqual([
+      { text: '[ Copy ]', plain: true, variant: undefined },
+      { text: '[ ≡ ]', plain: true, variant: undefined },
+    ])
+    expect(await controls('desktop')).toEqual([
+      { text: 'Copy', plain: undefined, variant: 'primary' },
+      { text: 'Actions ▾', plain: undefined, variant: 'secondary' },
+    ])
+    world.theme = 'auto'
+    expect(await controls('terminal')).toEqual([
+      { text: 'Copy', plain: undefined, variant: 'primary' },
+      { text: '≡', plain: undefined, variant: 'secondary' },
+    ])
   })
 
   test('the terminal shows the newest standing reading: this home’s recorded one before a response, and while idle', async ($, on) => {
@@ -925,6 +1111,26 @@ describe('vscode', () => {
     $.ui.mount({ plugin: PLUGIN, surface: 'vscode', component: 'AbovePrompt', props: PROPS(bodyColumns, 12) })
   type TBand = Awaited<ReturnType<typeof vscodeBand>>
   const textNamed = async (ui: TBand, text: string) => (await ui.findAll({ type: 'Text' })).find(found => found.text === text)
+  /** Presses a band Button by key. */
+  const pressIn = async ($: Engine, key: string) => {
+    const ui = await vscodeBand($)
+    await ui.press({ key })
+    await ui.unmount()
+  }
+  /** The Model and Effort Buttons' text, in order. */
+  const pickers = async ($: Engine) => {
+    const ui = await vscodeBand($)
+    const found = (await ui.findAll({ type: 'Button' })).filter(button => button.key === 'model' || button.key === 'effort')
+    await ui.unmount()
+    return found.map(button => button.text)
+  }
+  /** The keys of the open row's choices, in order. */
+  const pickKeys = async ($: Engine) => {
+    const ui = await vscodeBand($)
+    const found = (await ui.findAll({ type: 'Button' })).map(button => button.key ?? '').filter(key => key.startsWith('pick:'))
+    await ui.unmount()
+    return found
+  }
   /** Everything the band shows: its Texts, then each picture's alt, `|` between. */
   const shownIn = async (ui: TBand) =>
     [...(await ui.findAll({ type: 'Text' })).map(found => found.text), ...(await ui.findAll({ type: 'Svg' })).map(found => String(found.props.alt))].join('|')
@@ -979,8 +1185,9 @@ describe('vscode', () => {
   }
   const GREEN = '#2ea043'
   const AMBER = '#bf8700'
+  const ORANGE = '#d9730d'
   const RED = '#e5534b'
-  const FILL = '#80808033'
+  const FILLS = { normal: '#2ea0434d', notice: '#d4a0004d', warning: '#e8730a4d', critical: '#e5484d4d' }
 
   /** A busy session: 92 % context, a warm cache, 12 prompts sent, an agent at work. */
   function busyWorld(): World {
@@ -997,7 +1204,7 @@ describe('vscode', () => {
     return world
   }
 
-  test('a read-only dashboard: a one-row header, three blocks of two rows, no control at all', async ($, on) => {
+  test('the dashboard: a one-row header with the two pickers, three blocks of two rows, no other control', async ($, on) => {
     const world = busyWorld()
     const clock = engine(on, world)
     await start($, clock)
@@ -1006,9 +1213,12 @@ describe('vscode', () => {
     await $.turn.complete(ended(395_000))
     await clock.advance(1000)
     const ui = await vscodeBand($)
-    expect(await ui.findAll({ type: 'Button' })).toEqual([])
+    expect((await ui.findAll({ type: 'Button' })).map(found => [found.key, found.text, found.props.dimColor])).toEqual([
+      ['model', 'Opus 5.5 ▾', true],
+      ['effort', 'Xhigh ▾', true],
+    ])
     const text = await shownIn(ui)
-    for (const part of ['acme-web-frontend', 'feat/gameplay', 'Opus 5.5 · Xhigh']) expect(text).toContain(part)
+    for (const part of ['acme-web-frontend', 'feat/gameplay']) expect(text).toContain(part)
     for (const part of ['agent', 'Copy', '▾', '~$']) expect(text).not.toContain(part)
     const figures: Partial<Record<keyof typeof AT, string | RegExp>> = {
       'context-pct': '92%',
@@ -1039,16 +1249,18 @@ describe('vscode', () => {
     for (const key of ['context-use', 'context-cache', 'last', 'session', 'five', 'seven']) expect(await ui.find({ key })).toBeDefined()
     const alts = (await ui.findAll({ type: 'Svg' })).map(found => found.props.alt)
     expect(alts).toEqual(expect.arrayContaining(['🛢️', '🔥', '💬']))
-    // The large figures: 15 px semibold pictures. Severity alone is colored, per metric.
-    for (const [key, color] of [['context-pct', RED], ['five-pct', GREEN], ['seven-pct', AMBER], ['five-label', 'currentColor']] as const) {
+    // The large figures: 15 px semibold pictures. Levels alone are colored, per metric: context 92 %
+    // Critical, 5h 68 % Notice, 7d 75 % Warning.
+    for (const [key, color] of [['context-pct', RED], ['five-pct', AMBER], ['seven-pct', ORANGE], ['five-label', 'currentColor']] as const) {
       const source = String((await figureIn(ui, key))?.props.source)
       expect(source).toContain('font-size="15" font-weight="600"')
       expect(source).toContain(`fill="${color}"`)
     }
-    // Each meter row's fill is neutral, never a severity color.
+    // Each meter row's fill takes the same level as its percentage, softer than it.
     const boxes = await ui.findAll({ type: 'Box' })
-    for (const width of ['92%', '68%', '75%']) expect(boxes.find(found => found.props.width === width)?.props.backgroundColor).toBe(FILL)
-    expect(boxes.filter(found => [GREEN, AMBER, RED].some(color => String(found.props.backgroundColor).startsWith(color)))).toEqual([])
+    for (const [width, fill] of [['92%', FILLS.critical], ['68%', FILLS.notice], ['75%', FILLS.warning]] as const) {
+      expect(boxes.find(found => found.props.width === width)?.props.backgroundColor).toBe(fill)
+    }
     // Costs, durations and countdowns keep the panel's text color; labels and tokens its secondary one.
     for (const key of ['last-cost', 'session-cost', 'session-time', 'five-left'] as const) expect((await figureIn(ui, key))?.props.color).toBeUndefined()
     for (const key of ['tokens', 'last-label', 'five-at'] as const) expect((await figureIn(ui, key))?.props.color).toBe('inactive')
@@ -1468,7 +1680,7 @@ describe('vscode', () => {
     const ui = await vscodeBand($)
     // The fill at half strength, the figure the same color faded, its age in place of the reset clock.
     const boxes = await ui.findAll({ type: 'Box' })
-    expect(boxes.find(found => found.props.width === '40%')?.props.backgroundColor).toBe('#8080801a')
+    expect(boxes.find(found => found.props.width === '40%')?.props.backgroundColor).toBe('#2ea04326')
     const pct = await figureIn(ui, 'five-pct')
     expect(pct?.text).toBe('40%')
     expect(String(pct?.props.source)).toContain(`fill="${GREEN}"`)
@@ -1497,7 +1709,7 @@ describe('vscode', () => {
     const pct = await figureIn(ui, 'five-pct')
     expect(pct?.text).toBe('68%')
     expect(String(pct?.props.source)).not.toContain('fill-opacity')
-    expect((await ui.findAll({ type: 'Box' })).find(found => found.props.width === '68%')?.props.backgroundColor).toBe(FILL)
+    expect((await ui.findAll({ type: 'Box' })).find(found => found.props.width === '68%')?.props.backgroundColor).toBe(FILLS.notice)
     await ui.unmount()
     const quota = world.store?.quota as { five: { pct: number; observedAt: number }; seven: { pct: number } }
     expect([quota.five.pct, quota.seven.pct]).toEqual([68, 35])
@@ -1547,19 +1759,211 @@ describe('vscode', () => {
     world.agents = [{ id: 'a1', status: 'running', name: 'explorer', description: 'Find code', type: 'Explore' }]
     const clock = engine(on, world)
     await start($, clock)
-    expect(await band($, 'vscode')).toContain('Opus 5.5 · Xhigh')
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'Xhigh ▾'])
     // VS Code's model selector: the inline settings layer and the session model change, no event.
     world.model = 'claude-sonnet-5-5'
     await clock.advance(1000)
-    expect(await band($, 'vscode')).toContain('Sonnet 5.5 · High')
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'High ▾'])
     // Its effort selector writes the inline layer, which outranks the model's saved level.
     world.flagEffort = 'low'
     await clock.advance(1000)
-    expect(await band($, 'vscode')).toContain('Sonnet 5.5 · Low')
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'Low ▾'])
     // A typed /effort (this session only) is not undone by the next read of unchanged settings.
     await $.command.run({ command: 'effort', args: 'medium' } as never)
     await clock.advance(3000)
-    expect(await band($, 'vscode')).toContain('Sonnet 5.5 · Medium')
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'Medium ▾'])
+  })
+
+  /** A session in VS Code at Opus 5.5, xhigh by its saved setting. */
+  function pickerWorld(): World {
+    const world = fullWorld()
+    world.surfaces = ['vscode']
+    world.modelSettings = { 'claude-opus-5-5': { effortLevel: 'xhigh' }, 'claude-sonnet-5-5': { effortLevel: 'high' } }
+    return world
+  }
+
+  test('a picker opens its choices under the header; a second press, the other picker or Cancel moves on', async ($, on) => {
+    const world = pickerWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    expect(await pickKeys($)).toEqual([])
+    await pressIn($, 'model')
+    expect(await pickKeys($)).toEqual(['pick:default', 'pick:sonnet', 'pick:opus', 'pick:haiku', 'pick:cancel'])
+    expect(await pickers($)).toEqual(['Opus 5.5 ▴', 'Xhigh ▾'])
+    await pressIn($, 'model')
+    expect(await pickKeys($)).toEqual([])
+    await pressIn($, 'model')
+    await pressIn($, 'effort')
+    expect(await pickKeys($)).toEqual(['pick:low', 'pick:medium', 'pick:high', 'pick:xhigh', 'pick:max', 'pick:cancel'])
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'Xhigh ▴'])
+    await pressIn($, 'pick:cancel')
+    expect(await pickKeys($)).toEqual([])
+    expect(world.commands).toEqual([])
+    expect(world.configSets).toEqual([])
+  })
+
+  test('the current choice is the filled, marked Button; the others and Cancel are outlined', async ($, on) => {
+    const clock = engine(on, pickerWorld())
+    await start($, clock)
+    await pressIn($, 'effort')
+    const ui = await vscodeBand($)
+    const choices = (await ui.findAll({ type: 'Button' })).filter(found => found.key?.startsWith('pick:'))
+    await ui.unmount()
+    expect(choices.map(found => [found.text, found.props.dimColor])).toEqual([
+      ['Low', true],
+      ['Medium', true],
+      ['High', true],
+      ['● Xhigh', false],
+      ['Max', true],
+      ['Cancel', true],
+    ])
+    await pressIn($, 'pick:cancel')
+  })
+
+  test('a Model pick runs /model, which VS Code’s session takes, then saves it; the row closes', async ($, on) => {
+    const world = pickerWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    expect(world.commands).toEqual([{ command: 'model', args: 'sonnet' }])
+    expect(world.configSets).toEqual([{ key: 'model', value: 'sonnet' }])
+    expect(await pickKeys($)).toEqual([])
+    // No `/effort` ran: the new model's own saved level.
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'High ▾'])
+  })
+
+  test('a Model pick the last /model named first names what is in force; a pick of what is in force runs nothing', async ($, on) => {
+    const world = pickerWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    // The extension's selector moves the session, unseen by `/model`.
+    world.model = 'claude-haiku-5-5'
+    world.modelRow!.value = 'haiku'
+    world.commands.length = 0
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    expect(world.commands).toEqual([
+      { command: 'model', args: 'haiku' },
+      { command: 'model', args: 'sonnet' },
+    ])
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'High ▾'])
+    world.commands.length = 0
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    expect(world.commands).toEqual([])
+  })
+
+  test('a Model the row’s value cannot name again falls back on the default to change /model’s last value', async ($, on) => {
+    const world = pickerWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    await $.command.run({ command: 'model', args: 'haiku' } as never)
+    world.modelRow!.value = 'Default (recommended)'
+    world.commands.length = 0
+    await pressIn($, 'model')
+    await pressIn($, 'pick:haiku')
+    expect(world.commands).toEqual([
+      { command: 'model', args: 'default' },
+      { command: 'model', args: 'haiku' },
+    ])
+  })
+
+  test('an Effort pick runs /effort and the level holds: through the ticks, over the selector’s layer, through a model switch', async ($, on) => {
+    const world = pickerWorld()
+    world.flagEffort = 'high'
+    const clock = engine(on, world)
+    await start($, clock)
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'High ▾'])
+    await pressIn($, 'effort')
+    await pressIn($, 'pick:low')
+    expect(world.commands).toEqual([{ command: 'effort', args: 'low' }])
+    expect(await pickKeys($)).toEqual([])
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'Low ▾'])
+    await clock.advance(3000)
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'Low ▾'])
+    // `/effort` outlives a model switch here, so the band does not fall back on the model's level.
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    await clock.advance(3000)
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'Low ▾'])
+    // The same when the extension's selector switches the model.
+    world.model = 'claude-opus-5-5'
+    await clock.advance(1000)
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'Low ▾'])
+    world.model = 'claude-sonnet-5-5'
+    await clock.advance(1000)
+    // The selector writes another level: that one takes over.
+    world.flagEffort = 'medium'
+    await clock.advance(1000)
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'Medium ▾'])
+    // A level over the model's cap shows what it was set to.
+    world.effortText = "Effort 'max' exceeds the cap; set to 'high' instead (this session only): …"
+    await pressIn($, 'effort')
+    await pressIn($, 'pick:max')
+    expect(await pickers($)).toEqual(['Sonnet 5.5 ▾', 'High ▾'])
+  })
+
+  test('a refused change says so and keeps the value shown', async ($, on) => {
+    const world = pickerWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    // `/model` refused: nothing is saved.
+    world.modelRefusal = "Model 'fable' is not currently available for your account"
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    expect(world.toasts.at(-1)).toBe("Model not changed: Model 'fable' is not currently available for your account")
+    expect(world.configSets).toEqual([])
+    expect(await pickers($)).toEqual(['Opus 5.5 ▾', 'Xhigh ▾'])
+    world.modelRefusal = undefined
+    // Taken for the session but not saved.
+    world.configDenies = 'a policy keeps it'
+    await pressIn($, 'model')
+    await pressIn($, 'pick:sonnet')
+    expect(world.toasts.at(-1)).toBe('Model not saved: a policy keeps it')
+    world.configDenies = undefined
+    // `/effort` refused.
+    world.effortText = 'Invalid effort level'
+    await pressIn($, 'effort')
+    await pressIn($, 'pick:low')
+    expect(world.toasts.at(-1)).toBe('Effort not changed: Invalid effort level')
+    expect((await pickers($))[1]).toBe('High ▾')
+  })
+
+  test('a picker that cannot change anything is plain text: a locked or missing Model row, no effort setting', async ($, on) => {
+    const world = pickerWorld()
+    world.modelRow = { value: 'opus', options: ['opus'], isLocked: true }
+    const clock = engine(on, world)
+    await start($, clock)
+    let ui = await vscodeBand($)
+    expect(await ui.find({ key: 'model' })).toBeUndefined()
+    expect(await textNamed(ui, 'Opus 5.5')).toBeDefined()
+    expect((await ui.find({ key: 'effort' }))?.type).toBe('Button')
+    await ui.unmount()
+    world.modelRow = null
+    await clock.advance(15_000)
+    ui = await vscodeBand($)
+    expect(await ui.find({ key: 'model' })).toBeUndefined()
+    expect(await textNamed(ui, 'Opus 5.5')).toBeDefined()
+    await ui.unmount()
+    // A request went out without effort: the model takes none, so no picker.
+    const stream = $.turn.step({ turnId: 't', index: 0, model: world.model, messageCount: 1 } as never)
+    for await (const _ of stream) void _
+    await clock.settle()
+    ui = await vscodeBand($)
+    expect(await ui.find({ key: 'effort' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('the next prompt closes a row left open', async ($, on) => {
+    const clock = engine(on, pickerWorld())
+    await start($, clock)
+    await pressIn($, 'model')
+    expect(await pickKeys($)).not.toEqual([])
+    await $.turn.start(turn())
+    expect(await pickKeys($)).toEqual([])
   })
 
   test('the detail pane uses the secondary text and readable colors', async ($, on) => {
@@ -1579,7 +1983,7 @@ describe('vscode', () => {
     expect(texts.filter(found => found.props.dimColor === true)).toEqual([])
     expect(texts.find(found => found.text.startsWith('Session'))?.props.color).toBe('inactive')
     expect(texts.find(found => found.text.startsWith('~$ is the API-equivalent'))?.props.color).toBe('inactive')
-    expect(texts.find(found => found.text.startsWith('68% used'))?.props.color).toBe('yellow')
+    expect(texts.find(found => found.text.startsWith('68% used'))?.props.color).toBe(AMBER)
   })
 })
 

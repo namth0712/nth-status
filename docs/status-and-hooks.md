@@ -5,21 +5,28 @@ registers.
 
 ## Layouts
 
-- **Terminal dashboard** (where it fits): one rounded panel of four rows. A
-  header with the folder, branch, `Model ▾` and `Effort ▾`; two rows of three
-  zones (context and cache, prompt and session, 5h and 7d quotas); a footer
-  with `RC On`, the agents at work, `[ Copy ]` and `[ Actions ▾ ]`. The
-  context and quota rows double as meters, with a gray fill proportional to
-  the percentage.
+- **Terminal dashboard** (where it fits): five rows, six with a footer. A
+  header with the folder, branch, `Model ▾`, `Effort ▾`, `[ Copy ]` and
+  `[ ≡ ]` (Actions); three bordered blocks side by side, two rows each (context
+  and cache, prompt and session, 5h and 7d quotas); a footer with `RC On` and
+  the agents at work, only while there is one. The context and quota rows
+  double as meters, filled behind their text in proportion to the percentage,
+  in the color of its [level](#levels).
 - **Compact rows**: in the desktop app, and in a terminal too narrow (under
-  about 65 columns) or too short for the dashboard. Without room for the
-  border, the same rows are drawn without it.
+  about 76 columns) or too short for the dashboard: one rounded panel. Without
+  room for the border, the same rows are drawn without it.
 - **Narrowing**: the path shortens first, then less important segments drop
-  (reset times, `worktree`, 7d, icons, labels). `[ Copy ]` and
-  `[ Actions ▾ ]` never drop.
+  (reset times, `worktree`, 7d, icons, labels). `[ Copy ]` and `[ ≡ ]` never
+  drop.
 
-A choice row, menu or folder detail opens as one extra row inside the panel.
-Only one is open at a time.
+A choice row, menu or folder detail opens as one extra row in the band. Only
+one is open at a time.
+
+Under the `dark` and `light` themes and their daltonized variants the band
+paints its own background and names every text color, so it reads the same
+whatever background the terminal has (a light theme in a dark terminal shows a
+light card). Under any other theme (`auto`, ANSI, custom) it paints none and
+keeps the terminal's own foreground.
 
 ## Figures
 
@@ -37,11 +44,27 @@ Only one is open at a time.
 | Session | Prompt count, session duration and total cost | Cost hidden where Claude Code keeps no cost ledger |
 | Agents | Agents at work (pending, running or waiting) | No agent at work |
 
+### Levels
+
+Context, 5h and 7d share four levels, by the percentage as shown. A row's fill
+and its percentage take the same level, in the terminal and in VS Code; the
+detail pane colors its percentages the same way.
+
+| Level | Context | 5h, 7d | Color |
+|---|---|---|---|
+| Normal | 0-49 % | 0-59 % | Green (blue in the colorblind-friendly themes) |
+| Notice | 50-64 % | 60-74 % | Yellow |
+| Warning | 65-79 % | 75-84 % | Orange |
+| Critical | 80 % and above | 85 % and above | Red |
+
+The terminal draws no fill under `auto`, ANSI and custom themes, whose
+background it cannot vouch for; the percentages there take the theme's own
+colors.
+
 Notes:
 
-- Colors mark severity on the percentage only: context under 50 % green,
-  under 80 % yellow, else red; 5h and 7d under 60 % green, under 85 % yellow,
-  else red.
+- `DB` marks the prompt cache in the terminal, `🔥` a warm one. Both are chosen
+  to draw alike in every terminal font; `≡` is the Actions control.
 - `~$` is the API-equivalent estimate from Claude Code's cost ledger
   (`/cost`), not your bill. A prompt's cost includes subagent spend during
   that prompt.
@@ -60,8 +83,8 @@ Notes:
 ## Controls
 
 Every control is a button: a click or `Enter` presses it. `Ctrl+X` then
-`Tab` focuses the panel's controls in order (folder, Model, Effort, agents,
-Copy, Actions); `Tab` or `←`/`→` move, and `Esc` returns to the prompt.
+`Tab` focuses the panel's controls in order (folder, Model, Effort, Copy,
+Actions, agents); `Tab` or `←`/`→` move, and `Esc` returns to the prompt.
 
 | Control | Does |
 |---|---|
@@ -70,7 +93,7 @@ Copy, Actions); `Tab` or `←`/`→` move, and `Esc` returns to the prompt.
 | Effort ▾ | Opens the effort levels. A choice runs `/effort <level>`, which also saves the level as that model's default |
 | Agents | Opens the detail pane |
 | `[ Copy ]` | Terminal: runs the built-in `/copy`. Desktop app: copies the last completed response as Markdown, without progress text, thinking or tool output |
-| `[ Actions ▾ ]` | *Copy code* (one block: copies it; several: lists them), *Diff* (runs `/diff`), *Agents* (opens the pane), *Copy prompt* (your last typed prompt), *Session info* (a plain-text summary of the figures) |
+| `[ ≡ ]` (Actions; `Actions ▾` in the desktop app) | *Copy code* (one block: copies it; several: lists them), *Diff* (runs `/diff`), *Agents* (opens the pane), *Copy prompt* (your last typed prompt), *Session info* (a plain-text summary of the figures) |
 
 A row closes on a choice, `Cancel`/`Close`, a second press of its control,
 moving focus away, a click elsewhere in the panel, or the next prompt.
@@ -91,11 +114,38 @@ model, state and elapsed time. `Esc` closes it.
 
 ## VS Code
 
-The Claude Code extension's chat panel draws a read-only dashboard in the
-editor's theme: a header with the path, branch, model and effort, then three
-blocks (context and cache, prompt and session, 5h and 7d). It has no pickers,
-buttons or agent count. Change the model and effort with the extension's own
-selectors; the dashboard follows them.
+The Claude Code extension's chat panel draws a dashboard in the editor's theme:
+a header with the path, branch, `Model ▾` and `Effort ▾`, then three blocks
+(context and cache, prompt and session, 5h and 7d). It has no Copy, Actions or
+agent count.
+
+The pickers work as in the terminal: a press opens the choices under the
+header, the current one filled and marked `●`, then `Cancel`. The row closes on
+a choice, `Cancel`, a second press or the next prompt, and pressing the other
+picker swaps it. The panel tells a mod nothing about focus, so a click elsewhere
+leaves it open. A locked Model row is plain text, and a model without effort has
+no Effort picker.
+
+| Picker | A choice |
+|---|---|
+| Model | Runs `/model <choice>`, then saves `model` in your user settings, as the extension's own selector does |
+| Effort | Runs `/effort <level>`, which holds for this session and is not saved |
+
+The extension's own selectors work beside them, and the dashboard follows them.
+What the VS Code surface leaves open:
+
+- Each choice appears in the transcript as `Prompt from the nth-status plugin:
+  /model sonnet` with its answer, as if typed. A mod cannot run these commands
+  silently there. They start no model request. Choosing the model already in
+  force runs nothing. Choosing again the model the last `/model` named, after
+  the extension's selector moved away from it, runs `/model` twice: first with
+  the model in force, which the session needs to take the change.
+- The extension's selector under the prompt is not told of a choice made here:
+  it can keep showing the old model and effort until its next slash command or
+  reconnect, and choosing the level it already shows does nothing. Requests use
+  what the dashboard shows. No mod API can refresh it.
+
+The rest of the dashboard:
 
 - The cache is estimated from the session's requests (`~4m` with the
   five-minute TTL, up to about an hour with `promptCacheTtl: "1h"`). It reads

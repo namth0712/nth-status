@@ -4,13 +4,21 @@ import type { AgentRow, Cache, CachedQuota, CacheSeen, CacheTrack, PromptRecord,
 
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
-export const ICONS = { folder: '⌂', branch: '⎇', remote: '⇅', cache: '⛁', warm: '♨', cold: '❄', prompts: '✉', compacted: '↻' } as const
+/**
+ * The terminal's icons. `DB` and `≡` are in every terminal font, where `⛁` falls back to a tiny blob
+ * and `☰` breaks its column; `🔥` is two cells wide wherever it is drawn (`♨` a blob), so widths
+ * count it as two (`cells`).
+ */
+export const ICONS = { folder: '⌂', branch: '⎇', remote: '⇅', cache: 'DB', warm: '🔥', cold: '❄', prompts: '✉', compacted: '↻', actions: '≡' } as const
 
 /** Below this many columns only rows 1 and 2 and the agent count show. */
 const NARROW = 40
 const CACHE_WARNING_MS = 60_000
 
 export type TTone = 'success' | 'warning' | 'error'
+
+/** How far a usage figure has gone: its percentage and its progress fill take the same level. */
+export type TLevel = 'normal' | 'notice' | 'warning' | 'critical'
 
 export type TSegKind = 'text' | 'model' | 'effort' | 'agents' | 'copy' | 'actions' | 'folder'
 
@@ -22,6 +30,8 @@ export type Seg = {
   text: string
   kind?: TSegKind
   color?: TSegColor
+  /** A usage percentage's level; it outranks `color`. */
+  level?: TLevel
   isDim?: boolean
   isBold?: boolean
   /** Dropped as width shrinks, lowest first; absent: always kept. */
@@ -144,7 +154,7 @@ export function formatTokens(tokens: number): string {
  */
 export function panelFill(theme: unknown): string | undefined {
   if (theme === 'dark' || theme === 'dark-daltonized') return '#22252b'
-  if (theme === 'light' || theme === 'light-daltonized') return '#f2f3f5'
+  if (theme === 'light' || theme === 'light-daltonized') return '#f4f5f7'
   return undefined
 }
 
@@ -160,24 +170,21 @@ export function vscodeColor(color: TSegColor | undefined): string | undefined {
   return color === 'merged' || color === 'suggestion' ? undefined : color
 }
 
-/** VS Code's dashboard severity, one scale for context, 5h and 7d: under 70 % green, under 90 % amber, else red. */
-export function severityTone(pct: number): TTone {
-  return pct >= 90 ? 'error' : pct >= 70 ? 'warning' : 'success'
-}
-
-/**
- * VS Code's severity colors, raw: its percentages are pictures no theme color reaches, so they and
- * the cache's time take the same mid-tones, each at least 3:1 on a white and on a near-black panel.
- */
+/** VS Code's color for the cache's time, raw: a mid-tone at least 3:1 on a white and on a near-black panel. */
 export const SEVERITY: Record<TTone, string> = { success: '#2ea043', warning: '#bf8700', error: '#e5534b' }
 
-export function contextTone(pct: number): TTone {
-  return pct >= 80 ? 'error' : pct >= 50 ? 'warning' : 'success'
+/** A level by the percentage as shown: 49.6 % reads `50%`, so it is the level of 50. */
+const levelAt = (pct: number, notice: number, warning: number, critical: number): TLevel => {
+  const shown = Math.round(pct)
+  return shown >= critical ? 'critical' : shown >= warning ? 'warning' : shown >= notice ? 'notice' : 'normal'
 }
 
-export function quotaTone(pct: number): TTone {
-  return pct >= 85 ? 'error' : pct >= 60 ? 'warning' : 'success'
-}
+export const contextLevel = (pct: number) => levelAt(pct, 50, 65, 80)
+
+export const quotaLevel = (pct: number) => levelAt(pct, 60, 75, 85)
+
+/** The levels as theme keys, where the band paints no background of its own: the theme's own colors are tuned for the terminal's. */
+const LEVEL_KEYS: Record<TLevel, string> = { normal: 'success', notice: 'warning', warning: 'claude', critical: 'error' }
 
 // ---- gathering ----
 
@@ -447,11 +454,11 @@ function projectRow(status: Status, columns: number, key = 'project', right = re
 }
 
 /** A muted label and its value, dropped together. */
-function metric(key: string, label: string, value: string, color: TSegColor, drop?: number): Seg[] {
+function metric(key: string, label: string, value: string, level: TLevel, drop?: number): Seg[] {
   const rank = drop === undefined ? {} : { drop }
   return [
     { key: `${key}-label`, text: label, isDim: true, ...rank },
-    { key, text: value, color, ...rank },
+    { key, text: value, level, ...rank },
   ]
 }
 
@@ -472,14 +479,14 @@ function usageRow(status: Status, now: number): Row {
   const five = freshestQuota(status.usage.five, status.quotaCache?.five, now)
   const seven = freshestQuota(status.usage.seven, status.quotaCache?.seven, now)
   // Only the percentages carry the severity color; their labels stay muted.
-  if (ctx !== undefined) meters.push(...metric('ctx', 'Ctx', formatPercent(ctx), contextTone(ctx)))
+  if (ctx !== undefined) meters.push(...metric('ctx', 'Ctx', formatPercent(ctx), contextLevel(ctx)))
   if (five) {
-    meters.push(...metric('five', '5h', formatPercent(five.pct), quotaTone(five.pct)))
+    meters.push(...metric('five', '5h', formatPercent(five.pct), quotaLevel(five.pct)))
     if (five.resetsAt !== undefined && five.resetsAt > now) {
       meters.push({ key: 'five-reset', text: `(${formatCountdown(five.resetsAt - now)})`, isDim: true, drop: 1 })
     }
   }
-  if (seven) meters.push(...metric('seven', '7d', formatPercent(seven.pct), quotaTone(seven.pct), 3))
+  if (seven) meters.push(...metric('seven', '7d', formatPercent(seven.pct), quotaLevel(seven.pct), 3))
   return { key: 'usage', groups: [pickers, meters], right: [] }
 }
 
@@ -515,15 +522,15 @@ function agentsSeg(status: Status): Seg[] {
     : []
 }
 
-/** The two controls, never dropped: `Copy` and the `Actions ▾` menu, drawn as terminal buttons. */
-function controlsSeg(): Seg[] {
+/** The two controls, never dropped: `Copy` and the Actions menu, a single glyph in the terminal and a word elsewhere. */
+function controlsSeg(isTerminal: boolean): Seg[] {
   return [
     { key: 'copy', text: '[ Copy ]', kind: 'copy' },
-    { key: 'actions', text: '[ Actions ▾ ]', kind: 'actions' },
+    { key: 'actions', text: isTerminal ? `[ ${ICONS.actions} ]` : '[ Actions ▾ ]', kind: 'actions' },
   ]
 }
 
-function sessionRow(status: Status, now: number): Row {
+function sessionRow(status: Status, now: number, isTerminal: boolean): Row {
   const session: Seg[] = []
   if (status.usage.startedAt !== undefined) {
     session.push({ key: 'session', text: 'Session', isDim: true, drop: 6 })
@@ -533,25 +540,25 @@ function sessionRow(status: Status, now: number): Row {
       session.push({ key: 'session-cost', text: formatUsd(status.usage.costUsd), color: 'merged', drop: 4 })
     }
   }
-  return { key: 'session', groups: [session], right: [...agentsSeg(status), ...controlsSeg()] }
+  return { key: 'session', groups: [session], right: [...agentsSeg(status), ...controlsSeg(isTerminal)] }
 }
 
 /** The band's rows for the columns inside the panel; rows with nothing to show are left out. */
-export function layout(status: Status, now: number, columns: number): Layout {
+export function layout(status: Status, now: number, columns: number, isTerminal = true): Layout {
   const rows: Row[] =
     columns < NARROW
-      ? [projectRow(status, columns), usageRow(status, now), { key: 'session', groups: [], right: [...agentsSeg(status), ...controlsSeg()] }]
-      : [projectRow(status, columns), usageRow(status, now), activityRow(status, now), sessionRow(status, now)]
+      ? [projectRow(status, columns), usageRow(status, now), { key: 'session', groups: [], right: [...agentsSeg(status), ...controlsSeg(isTerminal)] }]
+      : [projectRow(status, columns), usageRow(status, now), activityRow(status, now), sessionRow(status, now, isTerminal)]
   return { rows: rows.map(row => fit(row, columns)).filter(row => !isEmpty(row)) }
 }
 
 // ---- the terminal's three zones ----
 
 /** One run of zone text, as one `Text` draws it. */
-export type Run = { text: string; color?: TSegColor; isBold?: boolean; isDim?: boolean }
+export type Run = { text: string; color?: TSegColor; level?: TLevel; isBold?: boolean; isDim?: boolean }
 
-/** A zone row: runs at the left and at the right edge; a meter fills `meter` % of the row behind them. */
-export type ZoneRow = { key: string; left: Run[]; right: Run[]; meter?: number }
+/** A zone row: runs at the left and at the right edge; a meter fills `meter` % of the row behind them, in its `level`'s color. */
+export type ZoneRow = { key: string; left: Run[]; right: Run[]; meter?: number; level?: TLevel }
 
 export type TZone = 'context' | 'meta' | 'quota'
 
@@ -560,34 +567,42 @@ export type Zone = { key: TZone; width: number; rows: ZoneRow[] }
 /** A painted run: its text, style and background. */
 export type Painted = Run & { bg?: string }
 
-/** The terminal's dashboard: a header, three zones side by side, a footer. */
-export type CliLayout = { header: Row; zones: Zone[]; footer: Row }
+/** The terminal's dashboard: a header with the controls, three zones side by side, and a footer while it has something to show. */
+export type CliLayout = { header: Row; zones: Zone[]; footer: Row | null }
 
-/** The header, the zones' two rows and the footer. */
-export const CLI_ROWS = 4
+/** The header, the zones' two rows inside their borders, and the footer: the room a dashboard asks for. */
+export const CLI_ROWS = 6
 /** Cells between two zones. */
 export const ZONE_GAP = 1
+/** Cells from the band's edge to the zones, each side. */
+export const ZONE_MARGIN = 1
+/** The cells a zone's border takes, one each side. */
+export const ZONE_BORDER = 2
+/** The header's and footer's margin each side: margin, border and padding, so their text lines up with the text inside the zones. */
+export const CLI_INSET = 3
 /**
  * Each zone's least width in cells, its one-cell padding each side included: what its figures
- * take at their longest (`100%  1.5M/1.5M`; `Session ≥99✉ 12h03m  ~$17.79`; `7d 6d23h Tue 03:00  100%`,
+ * take at their longest (`100%  1.5M/1.5M`, or `DB 1h00m 🔥  ↻ 0`; `Session ≥99✉ 12h03m  ~$17.79`; `7d 6d23h Tue 03:00  100%`,
  * or `7d 6d23h  100%` without the reset clock), so a figure changing length does not move the zones.
  */
-const ZONE_MIN = { context: 16, meta: 28, quota: 25 } as const
+const ZONE_MIN = { context: 18, meta: 28, quota: 25 } as const
 const ZONE_MIN_NO_CLOCK = 15
 /** How the cells beyond the zones' own are shared. */
 const ZONE_SHARES = { context: 30, meta: 32, quota: 38 } as const
 
-const cells = (text: string) => [...text].length
+const WIDE = /\p{Emoji_Presentation}/u
+const charCells = (char: string) => (WIDE.test(char) ? 2 : 1)
+const cells = (text: string) => [...text].reduce((sum, char) => sum + charCells(char), 0)
 const runsWidth = (runs: Run[]) => runs.reduce((sum, run) => sum + cells(run.text), 0)
 const zoneWidth = (rows: ZoneRow[]) => Math.max(...rows.map(row => runsWidth(row.left) + (row.right.length > 0 ? 2 + runsWidth(row.right) : 0))) + 2
 const SPACE: Run = { text: ' ' }
 const UNKNOWN: Run = { text: '—', isDim: true }
 
 /**
- * The terminal's dashboard for the columns inside the panel, or null where the three zones do not
- * fit side by side (the band then draws its compact rows). The figures are the VS Code board's,
- * with the terminal's own thresholds (context 50/80 %, quotas 60/85 %), its `~$` costs, and live
- * quotas only, as the terminal always showed; the reset clocks go first when space is short.
+ * The terminal's dashboard for the band's whole width, or null where the three zones do not fit
+ * side by side (the band then draws its compact rows). The figures are the VS Code board's, with
+ * the terminal's `~$` costs and live quotas only, as the terminal always showed; the reset clocks go
+ * first when space is short.
  */
 export function cliLayout(status: Status, now: number, columns: number): CliLayout | null {
   const shown = board(status, now)
@@ -603,9 +618,9 @@ export function cliLayout(status: Status, now: number, columns: number): CliLayo
   const context: ZoneRow[] = [
     {
       key: 'context-use',
-      left: status.usage.ctx === undefined ? [UNKNOWN] : [{ text: formatPercent(status.usage.ctx), isBold: true, color: contextTone(status.usage.ctx) }],
+      left: status.usage.ctx === undefined ? [UNKNOWN] : [{ text: formatPercent(status.usage.ctx), isBold: true, level: contextLevel(status.usage.ctx) }],
       right: ctx.tokens === null ? [] : [{ text: ctx.tokens, isDim: true }],
-      ...(status.usage.ctx === undefined ? {} : { meter: status.usage.ctx }),
+      ...(status.usage.ctx === undefined ? {} : { meter: status.usage.ctx, level: contextLevel(status.usage.ctx) }),
     },
     {
       key: 'context-cache',
@@ -645,8 +660,8 @@ export function cliLayout(status: Status, now: number, columns: number): CliLayo
           ...(hasClock && q?.at ? [SPACE, { text: q.at, isDim: true }] : []),
         ],
         // No standing reading (none in this process or this config home, or past its reset): `—`.
-        right: q ? [{ text: formatPercent(q.pct), isBold: true, color: quotaTone(q.pct) }] : [UNKNOWN],
-        ...(q ? { meter: q.pct } : {}),
+        right: q ? [{ text: formatPercent(q.pct), isBold: true, level: q.level }] : [UNKNOWN],
+        ...(q ? { meter: q.pct, level: q.level } : {}),
       }
     }
     const quota = [window('five', '5h'), window('seven', '7d')]
@@ -655,19 +670,22 @@ export function cliLayout(status: Status, now: number, columns: number): CliLayo
       meta: Math.max(ZONE_MIN.meta, zoneWidth(meta)),
       quota: Math.max(hasClock ? ZONE_MIN.quota : ZONE_MIN_NO_CLOCK, zoneWidth(quota)),
     }
-    const extra = columns - 2 * ZONE_GAP - need.context - need.meta - need.quota
+    const inside = columns - 2 * ZONE_MARGIN - 2 * ZONE_GAP - 3 * ZONE_BORDER
+    const extra = inside - need.context - need.meta - need.quota
     if (extra < 0) continue
     const total = ZONE_SHARES.context + ZONE_SHARES.meta + ZONE_SHARES.quota
     const contextWidth = need.context + Math.floor((extra * ZONE_SHARES.context) / total)
     const metaWidth = need.meta + Math.floor((extra * ZONE_SHARES.meta) / total)
+    const rowColumns = columns - 2 * CLI_INSET
+    const footer = fit({ key: 'footer', groups: [remoteSegs(status)], right: agentsSeg(status) }, rowColumns)
     return {
-      header: fit(projectRow(status, columns, 'header', pickerSegs(status)), columns),
+      header: fit(projectRow(status, rowColumns, 'header', [...pickerSegs(status), ...controlsSeg(true)]), rowColumns),
       zones: [
         { key: 'context', width: contextWidth, rows: context },
         { key: 'meta', width: metaWidth, rows: meta },
-        { key: 'quota', width: columns - 2 * ZONE_GAP - contextWidth - metaWidth, rows: quota },
+        { key: 'quota', width: inside - contextWidth - metaWidth, rows: quota },
       ],
-      footer: fit({ key: 'footer', groups: [remoteSegs(status)], right: [...agentsSeg(status), ...controlsSeg()] }, columns),
+      footer: isEmpty(footer) ? null : footer,
     }
   }
   return null
@@ -676,7 +694,7 @@ export function cliLayout(status: Status, now: number, columns: number): CliLayo
 /**
  * A zone row drawn `width` cells wide: one cell of padding each side, the left runs, the right ones
  * at the far edge, and the zone's tint behind them; a meter's first `meter` % of the cells take the
- * neutral fill instead, the text drawn over both. Runs split where the fill ends.
+ * fill instead, the text drawn over both. Runs split where the fill ends, between characters.
  */
 export function paintRow(row: ZoneRow, width: number, tint?: string, fill?: string): Painted[] {
   const gap = Math.max(1, width - 2 - runsWidth(row.left) - runsWidth(row.right))
@@ -687,32 +705,92 @@ export function paintRow(row: ZoneRow, width: number, tint?: string, fill?: stri
   let at = 0
   for (const run of runs) {
     const chars = [...run.text]
-    const cut = Math.max(0, Math.min(chars.length, filled - at))
+    let cut = 0
+    for (let x = at; cut < chars.length && x + charCells(chars[cut]!) <= filled; cut++) x += charCells(chars[cut]!)
     for (const [part, bg] of [[chars.slice(0, cut), fill], [chars.slice(cut), tint]] as const) {
       if (part.length === 0) continue
       const prev = out.at(-1)
-      const isSame = prev && prev.bg === bg && prev.color === run.color && prev.isBold === run.isBold && prev.isDim === run.isDim
+      const isSame = prev && prev.bg === bg && prev.color === run.color && prev.level === run.level && prev.isBold === run.isBold && prev.isDim === run.isDim
       if (isSame) prev.text += part.join('')
       else out.push({ ...run, text: part.join(''), ...(bg === undefined ? {} : { bg }) })
     }
-    at += chars.length
+    at += cells(run.text)
   }
   return out
 }
 
+/** What the band paints where it paints its own background: all raw, as no theme key names a background. */
+export type BandColors = Record<TZone, string> & {
+  /** The band's main and secondary text. */
+  ink: string
+  muted: string
+  borders: Record<TZone, string>
+  /** Each level's progress fill, and its percentage, stronger than the fill and readable on it and off it. */
+  levels: Record<TLevel, { fill: string; text: string }>
+  /** Theme colors too faint to stand on the band's fills, as a darker shade of the same hue. */
+  tones?: Partial<Record<TSegColor, string>>
+}
+
+const DARK_ZONES = {
+  context: '#232a36',
+  meta: '#2a2634',
+  quota: '#212d2c',
+  ink: '#f2f5f9',
+  muted: '#c3cad6',
+  borders: { context: '#46556e', meta: '#54496c', quota: '#3f5e59' },
+  levels: {
+    normal: { fill: '#1d4d38', text: '#6ee7a8' },
+    notice: { fill: '#524516', text: '#ffd866' },
+    warning: { fill: '#5e3a14', text: '#ffa94d' },
+    critical: { fill: '#60272b', text: '#ff8a80' },
+  },
+}
+const LIGHT_ZONES = {
+  context: '#edf2fb',
+  meta: '#f3eefa',
+  quota: '#ebf6f3',
+  ink: '#1b2a4a',
+  muted: '#46546f',
+  borders: { context: '#a3b6d9', meta: '#b9a6da', quota: '#98c5b8' },
+  levels: {
+    normal: { fill: '#bfe8cc', text: '#0f6632' },
+    notice: { fill: '#f6e39b', text: '#735400' },
+    warning: { fill: '#fbcfa3', text: '#a03f00' },
+    critical: { fill: '#f8c0bc', text: '#9e1220' },
+  },
+}
+
 /**
- * The zones' faint tints and a meter's neutral fill, raw per theme family as the panel's own fill
- * (no theme key names a background); none where the theme is unknown, automatic or ANSI-only.
+ * The zones' faint tints, the text on them and the levels' colors, raw per theme family as the
+ * panel's own fill; none where the theme is unknown, automatic or ANSI-only. Percentages stand at
+ * 4.5:1 or better on their fill, the main text at 8.5:1, the secondary text at 4.8:1. The daltonized
+ * themes draw their lowest level blue, as their own `success` does, so it never reads against red.
  */
-export function zoneColors(theme: unknown): (Record<TZone, string> & { fill: string }) | undefined {
-  if (theme === 'dark' || theme === 'dark-daltonized') return { context: '#232a36', meta: '#2a2634', quota: '#212d2c', fill: '#3a404b' }
-  if (theme === 'light' || theme === 'light-daltonized') return { context: '#e8eef8', meta: '#f0eaf7', quota: '#e6f3f0', fill: '#d2d6dd' }
+export function zoneColors(theme: unknown): BandColors | undefined {
+  if (theme === 'dark') return DARK_ZONES
+  if (theme === 'dark-daltonized') return { ...DARK_ZONES, levels: { ...DARK_ZONES.levels, normal: { fill: '#1b3f5e', text: '#7cc4ff' } } }
+  if (theme === 'light') return { ...LIGHT_ZONES, tones: { success: '#1f6b2e', warning: '#7a5600', suggestion: '#3f4fd6' } }
+  if (theme === 'light-daltonized') {
+    return { ...LIGHT_ZONES, levels: { ...LIGHT_ZONES.levels, normal: { fill: '#bcdcf2', text: '#00558a' } }, tones: { warning: '#8a4f00', suggestion: '#2a50d0' } }
+  }
   return undefined
+}
+
+/**
+ * The color a run is drawn in. On a raw fill no text is left to the terminal: its default foreground
+ * is near-white on a light fill when a light theme runs in a dark terminal (and the reverse), and
+ * dimming it does not help. No fill: the run's own color, a level's as a theme key.
+ */
+export function inkOf(run: { color?: TSegColor; level?: TLevel; isDim?: boolean }, colors: BandColors | undefined): string | undefined {
+  if (run.level) return colors ? colors.levels[run.level].text : LEVEL_KEYS[run.level]
+  if (!colors) return run.color
+  if (run.color) return colors.tones?.[run.color] ?? run.color
+  return run.isDim ? colors.muted : colors.ink
 }
 
 // ---- VS Code dashboard ----
 
-export type Meter = { pct: number; tone: TTone }
+export type Meter = { pct: number; level: TLevel }
 
 /** `age` is set for a cached reading (how long ago it was seen), null for a live one. */
 export type BoardQuota = Meter & { left: string | null; at: string | null; age: string | null }
@@ -768,7 +846,7 @@ function boardQuota(
   if (!quota) return null
   return {
     pct: quota.pct,
-    tone: severityTone(quota.pct),
+    level: quotaLevel(quota.pct),
     left: quota.resetsAt === undefined ? null : formatCountdown(quota.resetsAt - now),
     at: quota.resetsAt === undefined ? null : clock(quota.resetsAt),
     age: 'observedAt' in quota ? formatAge(now - quota.observedAt) : null,
@@ -853,7 +931,7 @@ export function board(status: Status, now: number): Board {
   const cost = prompt ? promptCost(prompt, usage.costUsd) : undefined
   return {
     context: {
-      meter: usage.ctx === undefined ? null : { pct: usage.ctx, tone: severityTone(usage.ctx) },
+      meter: usage.ctx === undefined ? null : { pct: usage.ctx, level: contextLevel(usage.ctx) },
       tokens:
         usage.ctxTokens !== undefined && usage.ctxWindow !== undefined
           ? `${formatTokens(usage.ctxTokens)}/${formatTokens(usage.ctxWindow)}`
@@ -891,17 +969,32 @@ const FIGURE_GLYPHS: Record<string, number> = {
 export const FIGURE_HEIGHT = 20
 
 /**
+ * VS Code's levels. A fill is the level's color with alpha, so it sits soft on a light and a dark
+ * panel alike, under the panel's own text; a cached reading's at half. A mod is not told the editor's
+ * theme, so a percentage takes its lightness from the panel's text color (`currentColor`), which
+ * gives the dark shade on a light theme and the bright one on a dark theme; `text` is its plain
+ * fallback, and what the pane's text is drawn in.
+ */
+export const VS_LEVELS: Record<TLevel, { text: string; hue: number; chroma: number; fill: string; cachedFill: string }> = {
+  normal: { text: '#2ea043', hue: 155, chroma: 0.15, fill: '#2ea0434d', cachedFill: '#2ea04326' },
+  notice: { text: '#bf8700', hue: 90, chroma: 0.14, fill: '#d4a0004d', cachedFill: '#d4a00026' },
+  warning: { text: '#d9730d', hue: 55, chroma: 0.16, fill: '#e8730a4d', cachedFill: '#e8730a26' },
+  critical: { text: '#e5534b', hue: 25, chroma: 0.18, fill: '#e5484d4d', cachedFill: '#e5484d26' },
+}
+
+/**
  * A 15 px semibold figure (`77%`, `5h`) as a picture: the panel's Text takes no size or weight
- * but bold. The panel hands a picture its font and text color (`currentColor`); a severity color
- * takes a little of it, darker on a light theme and lighter on a dark one, as it sits on a meter's
- * gray fill. The baseline matches the 13 px text centered beside it. Sized to the text as Segoe UI
+ * but bold. The panel hands a picture its font and text color (`currentColor`), which a label takes
+ * as it is. The baseline matches the 13 px text centered beside it. Sized to the text as Segoe UI
  * draws it, and `textLength` holds a wider font to that width rather than let it clip. Faded when
  * cached.
  */
-export function figureSvg(text: string, color: string | null, isFaded = false): { source: string; width: number } {
+export function figureSvg(text: string, level: TLevel | null, isFaded = false): { source: string; width: number } {
   const length = [...text].reduce((sum, ch) => sum + (FIGURE_GLYPHS[ch] ?? 9), 0)
   const width = Math.ceil(length + 0.5)
-  const fill = color === null ? 'fill="currentColor"' : `fill="${color}" style="fill:color-mix(in srgb,${color} 78%,currentColor)"`
+  const paint = level === null ? null : VS_LEVELS[level]
+  const fill =
+    paint === null ? 'fill="currentColor"' : `fill="${paint.text}" style="fill:oklch(from currentColor calc(l * 0.75 + 0.18) ${paint.chroma} ${paint.hue})"`
   return {
     width,
     source:
@@ -925,7 +1018,7 @@ export const SVG_ICONS = {
 
 // ---- detail pane ----
 
-export type PaneLine = { label: string; value: string; color?: TTone | 'subtle' }
+export type PaneLine = { label: string; value: string; color?: TTone | 'subtle'; level?: TLevel }
 
 function quotaLine(label: string, quota: Quota | undefined, now: number): PaneLine {
   if (!quota) return { label, value: 'unavailable (no subscription reading yet)', color: 'subtle' }
@@ -933,7 +1026,7 @@ function quotaLine(label: string, quota: Quota | undefined, now: number): PaneLi
     quota.resetsAt !== undefined && quota.resetsAt > now
       ? ` · resets ${formatClock(quota.resetsAt, now)} (in ${formatCountdown(quota.resetsAt - now)})`
       : ''
-  return { label, value: `${formatPercent(quota.pct)} used${reset}`, color: quotaTone(quota.pct) }
+  return { label, value: `${formatPercent(quota.pct)} used${reset}`, level: quotaLevel(quota.pct) }
 }
 
 export function paneLines(status: Status, now: number): PaneLine[] {
@@ -963,7 +1056,7 @@ export function paneLines(status: Status, now: number): PaneLine[] {
   lines.push(
     usage.ctx === undefined
       ? { label: 'Context', value: 'unknown until the first response', color: 'subtle' }
-      : { label: 'Context', value: `${formatPercent(usage.ctx)} used`, color: contextTone(usage.ctx) },
+      : { label: 'Context', value: `${formatPercent(usage.ctx)} used`, level: contextLevel(usage.ctx) },
   )
   lines.push(quotaLine('5-hour', freshestQuota(usage.five, status.quotaCache?.five, now) ?? undefined, now))
   lines.push(quotaLine('7-day', freshestQuota(usage.seven, status.quotaCache?.seven, now) ?? undefined, now))
