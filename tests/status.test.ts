@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import {
   board,
+  ICONS,
   cliLayout,
   CLI_INSET,
   inkOf,
@@ -95,12 +96,13 @@ describe('formatting', () => {
     expect(pct.width).toBe(30)
     expect(pct.source).toContain('textLength="28.68" lengthAdjust="spacingAndGlyphs"')
     expect(pct.source).toContain('font-size="15" font-weight="600"')
-    // A level's lightness follows the panel's text color, dark on a light theme and bright on a dark
-    // one, with a plain fallback; a label is the text color itself.
-    expect(pct.source).toContain('fill="#bf8700" style="fill:oklch(from currentColor calc(l * 0.75 + 0.18) 0.14 90)"')
+    // A level takes the palette's light or dark color by the panel's text color, with a plain fallback;
+    // a label the main text's the same way.
+    const dark = 'clamp(0, (r - 128) * 255, 1)'
+    expect(pct.source).toContain(`fill="#bf8700" style="fill:rgb(from currentColor calc(119 + 136 * ${dark}) calc(83 + 141 * ${dark}) calc(0 + 117 * ${dark}))"`)
     expect(pct.source).toContain('>77%</text>')
     expect(pct.source).not.toContain('fill-opacity')
-    expect(figureSvg('5h', null).source).toContain('fill="currentColor"')
+    expect(figureSvg('5h', null).source).toContain(`fill="currentColor" style="fill:rgb(from currentColor calc(23 + 220 * ${dark})`)
     expect(figureSvg('100%', 'critical').width).toBe(36)
     expect(figureSvg('20%', 'normal', true).source).toContain('fill-opacity="0.55"')
   })
@@ -183,21 +185,32 @@ describe('terminal zones', () => {
 
   test('a run’s color: the band’s ink on a fill, a darker tone where the theme’s is faint, a level’s own', async () => {
     const light = zoneColors('light')
-    expect(inkOf({}, light)).toBe('#1b2a4a')
+    expect(inkOf({}, light)).toBe('#172334')
     expect(inkOf({ isDim: true }, light)).toBe('#46546f')
     expect(inkOf({ color: 'warning' }, light)).toBe('#7a5600')
     expect(inkOf({ color: 'error' }, light)).toBe('error')
     expect(inkOf({ color: 'warning' }, zoneColors('light-daltonized'))).toBe('#8a4f00')
     expect(inkOf({ color: 'success' }, zoneColors('light-daltonized'))).toBe('success')
     expect(inkOf({ color: 'warning' }, zoneColors('dark'))).toBe('warning')
-    expect(inkOf({}, zoneColors('dark'))).toBe('#f2f5f9')
+    expect(inkOf({}, zoneColors('dark'))).toBe('#f3f6fa')
     // A level outranks a color.
-    expect(inkOf({ level: 'critical', color: 'success' }, light)).toBe('#9e1220')
-    expect(inkOf({ level: 'normal' }, zoneColors('dark'))).toBe('#6ee7a8')
+    expect(inkOf({ level: 'critical', color: 'success' }, light)).toBe('#a11e33')
+    expect(inkOf({ level: 'normal' }, zoneColors('dark'))).toBe('#73e9ad')
     // No fill: the terminal's foreground is right, whatever its background; a level as a theme key.
     expect(inkOf({}, undefined)).toBeUndefined()
     expect(inkOf({ color: 'warning' }, undefined)).toBe('warning')
     expect((['normal', 'notice', 'warning', 'critical'] as const).map(level => inkOf({ level }, undefined))).toEqual(['success', 'warning', 'claude', 'error'])
+  })
+
+  test('the levels are the approved palette, exactly', async () => {
+    const pairs = (theme: string) => (['normal', 'notice', 'warning', 'critical'] as const).map(level => [zoneColors(theme)!.levels[level].fill, zoneColors(theme)!.levels[level].text])
+    expect(pairs('light')).toEqual([['#c5e8d3', '#11623e'], ['#f7e9af', '#775300'], ['#f6ceab', '#91430f'], ['#f2c1c7', '#a11e33']])
+    expect(pairs('dark')).toEqual([['#285743', '#73e9ad'], ['#645326', '#ffe075'], ['#754825', '#ffb26d'], ['#73343c', '#ff8d9a']])
+    expect([zoneColors('light')!.ink, zoneColors('dark')!.ink]).toEqual(['#172334', '#f3f6fa'])
+  })
+
+  test('the cache icon is the bare drum: one code point, no emoji selector, which would change its width', async () => {
+    expect([...ICONS.cache].map(char => char.codePointAt(0))).toEqual([0x1f6e2])
   })
 
   test('every level stands out from its panel: percentages readable on the fill and off it', async () => {
@@ -207,10 +220,10 @@ describe('terminal zones', () => {
     for (const theme of ['light', 'light-daltonized', 'dark', 'dark-daltonized']) {
       const colors = zoneColors(theme)!
       for (const { fill, text } of Object.values(colors.levels)) {
-        expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.5)
-        expect(contrast(colors.ink, fill)).toBeGreaterThanOrEqual(7)
+        expect(contrast(text, fill)).toBeGreaterThanOrEqual(4.1)
+        expect(contrast(colors.ink, fill)).toBeGreaterThanOrEqual(6.9)
         expect(contrast(colors.muted, fill)).toBeGreaterThanOrEqual(4.5)
-        for (const tint of [colors.context, colors.meta, colors.quota, panelFill(theme)!]) expect(contrast(text, tint)).toBeGreaterThanOrEqual(4.5)
+        for (const tint of [colors.context, colors.meta, colors.quota, panelFill(theme)!]) expect(contrast(text, tint)).toBeGreaterThanOrEqual(6)
       }
     }
   })

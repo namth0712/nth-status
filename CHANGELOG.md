@@ -13,7 +13,7 @@
   and the footer shows only while it holds `RC On` or agents, so the height is
   five or six rows and the task-progress height contract is unchanged. The
   compact rows now take over under about 76 columns instead of 70.
-- Terminal: the Actions control is now `[ ≡ ]`, the cache icon `DB` and the warm
+- Terminal: the Actions control is now `[ ≡ ]`, the cache icon `🛢` and the warm
   icon `🔥`, in place of `[ Actions ▾ ]`, `⛁` and `♨`, which many terminal fonts
   draw badly.
 - Terminal and VS Code: four levels for context, 5h and 7d, on both the progress

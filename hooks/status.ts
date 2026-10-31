@@ -5,11 +5,13 @@ import type { AgentRow, Cache, CachedQuota, CacheSeen, CacheTrack, PromptRecord,
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
 /**
- * The terminal's icons. `DB` and `≡` are in every terminal font, where `⛁` falls back to a tiny blob
- * and `☰` breaks its column; `🔥` is two cells wide wherever it is drawn (`♨` a blob), so widths
+ * The terminal's icons. `cache` is the oil drum, a banded cylinder, alone: one cell wide in the
+ * renderer and the terminals, where the emoji form (with U+FE0F) is two cells to the renderer and
+ * one to mintty, which breaks the row, and `⛁` falls back to a tiny blob. `≡` is in every terminal
+ * font (`☰` breaks its column). `🔥` is two cells wide wherever it is drawn (`♨` a blob), so widths
  * count it as two (`cells`).
  */
-export const ICONS = { folder: '⌂', branch: '⎇', remote: '⇅', cache: 'DB', warm: '🔥', cold: '❄', prompts: '✉', compacted: '↻', actions: '≡' } as const
+export const ICONS = { folder: '⌂', branch: '⎇', remote: '⇅', cache: '\u{1F6E2}', warm: '🔥', cold: '❄', prompts: '✉', compacted: '↻', actions: '≡' } as const
 
 /** Below this many columns only rows 1 and 2 and the agent count show. */
 const NARROW = 40
@@ -582,7 +584,7 @@ export const ZONE_BORDER = 2
 export const CLI_INSET = 3
 /**
  * Each zone's least width in cells, its one-cell padding each side included: what its figures
- * take at their longest (`100%  1.5M/1.5M`, or `DB 1h00m 🔥  ↻ 0`; `Session ≥99✉ 12h03m  ~$17.79`; `7d 6d23h Tue 03:00  100%`,
+ * take at their longest (`100%  1.5M/1.5M`, or `🛢 1h00m 🔥  ↻ 10`; `Session ≥99✉ 12h03m  ~$17.79`; `7d 6d23h Tue 03:00  100%`,
  * or `7d 6d23h  100%` without the reset clock), so a figure changing length does not move the zones.
  */
 const ZONE_MIN = { context: 18, meta: 28, quota: 25 } as const
@@ -624,7 +626,7 @@ export function cliLayout(status: Status, now: number, columns: number): CliLayo
     },
     {
       key: 'context-cache',
-      left: [{ text: ICONS.cache, isDim: true }, SPACE, ...cacheRuns],
+      left: [{ text: ICONS.cache }, SPACE, ...cacheRuns],
       right: [{ text: ICONS.compacted, isDim: true }, SPACE, ctx.compactions === '—' ? UNKNOWN : { text: ctx.compactions }],
     },
   ]
@@ -735,35 +737,36 @@ const DARK_ZONES = {
   context: '#232a36',
   meta: '#2a2634',
   quota: '#212d2c',
-  ink: '#f2f5f9',
+  ink: '#f3f6fa',
   muted: '#c3cad6',
   borders: { context: '#46556e', meta: '#54496c', quota: '#3f5e59' },
   levels: {
-    normal: { fill: '#1d4d38', text: '#6ee7a8' },
-    notice: { fill: '#524516', text: '#ffd866' },
-    warning: { fill: '#5e3a14', text: '#ffa94d' },
-    critical: { fill: '#60272b', text: '#ff8a80' },
+    normal: { fill: '#285743', text: '#73e9ad' },
+    notice: { fill: '#645326', text: '#ffe075' },
+    warning: { fill: '#754825', text: '#ffb26d' },
+    critical: { fill: '#73343c', text: '#ff8d9a' },
   },
 }
 const LIGHT_ZONES = {
   context: '#edf2fb',
   meta: '#f3eefa',
   quota: '#ebf6f3',
-  ink: '#1b2a4a',
+  ink: '#172334',
   muted: '#46546f',
   borders: { context: '#a3b6d9', meta: '#b9a6da', quota: '#98c5b8' },
   levels: {
-    normal: { fill: '#bfe8cc', text: '#0f6632' },
-    notice: { fill: '#f6e39b', text: '#735400' },
-    warning: { fill: '#fbcfa3', text: '#a03f00' },
-    critical: { fill: '#f8c0bc', text: '#9e1220' },
+    normal: { fill: '#c5e8d3', text: '#11623e' },
+    notice: { fill: '#f7e9af', text: '#775300' },
+    warning: { fill: '#f6ceab', text: '#91430f' },
+    critical: { fill: '#f2c1c7', text: '#a11e33' },
   },
 }
 
 /**
  * The zones' faint tints, the text on them and the levels' colors, raw per theme family as the
- * panel's own fill; none where the theme is unknown, automatic or ANSI-only. Percentages stand at
- * 4.5:1 or better on their fill, the main text at 8.5:1, the secondary text at 4.8:1. The daltonized
+ * panel's own fill; none where the theme is unknown, automatic or ANSI-only. The levels and main
+ * text are the approved palette. On a fill the main text stands at 6.9:1 or better, the secondary
+ * text at 4.5:1, a percentage at 4.1:1 (dark Critical; it is bold), and at 6:1 off it. The daltonized
  * themes draw their lowest level blue, as their own `success` does, so it never reads against red.
  */
 export function zoneColors(theme: unknown): BandColors | undefined {
@@ -969,32 +972,41 @@ const FIGURE_GLYPHS: Record<string, number> = {
 export const FIGURE_HEIGHT = 20
 
 /**
- * VS Code's levels. A fill is the level's color with alpha, so it sits soft on a light and a dark
- * panel alike, under the panel's own text; a cached reading's at half. A mod is not told the editor's
- * theme, so a percentage takes its lightness from the panel's text color (`currentColor`), which
- * gives the dark shade on a light theme and the bright one on a dark theme; `text` is its plain
- * fallback, and what the pane's text is drawn in.
+ * VS Code's levels, the terminal's palette as far as the panel allows. A mod is not told the editor's
+ * theme, and a Box takes only one fixed color: a `fill` is the one translucent color that lands on
+ * the palette's light fill over a light panel and its dark fill over a dark one (a cached reading's
+ * at half). A picture does know its text color (`currentColor`), so a percentage takes the palette's
+ * exact `light` or `dark`; `text` is its plain fallback, and what the pane's Text is drawn in.
  */
-export const VS_LEVELS: Record<TLevel, { text: string; hue: number; chroma: number; fill: string; cachedFill: string }> = {
-  normal: { text: '#2ea043', hue: 155, chroma: 0.15, fill: '#2ea0434d', cachedFill: '#2ea04326' },
-  notice: { text: '#bf8700', hue: 90, chroma: 0.14, fill: '#d4a0004d', cachedFill: '#d4a00026' },
-  warning: { text: '#d9730d', hue: 55, chroma: 0.16, fill: '#e8730a4d', cachedFill: '#e8730a26' },
-  critical: { text: '#e5534b', hue: 25, chroma: 0.18, fill: '#e5484d4d', cachedFill: '#e5484d26' },
+export const VS_LEVELS: Record<TLevel, { text: string; light: string; dark: string; fill: string; cachedFill: string }> = {
+  normal: { text: '#2ea043', light: '#11623e', dark: '#73e9ad', fill: '#50f28e3b', cachedFill: '#50f28e1d' },
+  notice: { text: '#bf8700', light: '#775300', dark: '#ffe075', fill: '#ffcd2b54', cachedFill: '#ffcd2b2a' },
+  warning: { text: '#d9730d', light: '#91430f', dark: '#ffb26d', fill: '#ff913363', cachedFill: '#ff913331' },
+  critical: { text: '#e5534b', light: '#a11e33', dark: '#ff8d9a', fill: '#ff637259', cachedFill: '#ff63722c' },
+}
+
+/** One of two colors by the panel's text color, in CSS: light text means a dark theme. */
+function byPanelText(light: string, dark: string): string {
+  const channels = (hex: string) => [1, 3, 5].map(at => parseInt(hex.slice(at, at + 2), 16))
+  const to = channels(dark)
+  const isDark = 'clamp(0, (r - 128) * 255, 1)'
+  return `rgb(from currentColor ${channels(light).map((from, i) => `calc(${from} + ${to[i]! - from} * ${isDark})`).join(' ')})`
 }
 
 /**
  * A 15 px semibold figure (`77%`, `5h`) as a picture: the panel's Text takes no size or weight
- * but bold. The panel hands a picture its font and text color (`currentColor`), which a label takes
- * as it is. The baseline matches the 13 px text centered beside it. Sized to the text as Segoe UI
- * draws it, and `textLength` holds a wider font to that width rather than let it clip. Faded when
- * cached.
+ * but bold. The panel hands a picture its font and text color (`currentColor`), by which a figure
+ * picks the palette's color for the theme: its level's, or for a label the main text's. The baseline
+ * matches the 13 px text centered beside it. Sized to the text as Segoe UI draws it, and `textLength`
+ * holds a wider font to that width rather than let it clip. Faded when cached.
  */
 export function figureSvg(text: string, level: TLevel | null, isFaded = false): { source: string; width: number } {
   const length = [...text].reduce((sum, ch) => sum + (FIGURE_GLYPHS[ch] ?? 9), 0)
   const width = Math.ceil(length + 0.5)
   const paint = level === null ? null : VS_LEVELS[level]
-  const fill =
-    paint === null ? 'fill="currentColor"' : `fill="${paint.text}" style="fill:oklch(from currentColor calc(l * 0.75 + 0.18) ${paint.chroma} ${paint.hue})"`
+  const fill = paint
+    ? `fill="${paint.text}" style="fill:${byPanelText(paint.light, paint.dark)}"`
+    : `fill="currentColor" style="fill:${byPanelText(LIGHT_ZONES.ink, DARK_ZONES.ink)}"`
   return {
     width,
     source:

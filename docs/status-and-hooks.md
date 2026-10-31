@@ -61,10 +61,19 @@ The terminal draws no fill under `auto`, ANSI and custom themes, whose
 background it cannot vouch for; the percentages there take the theme's own
 colors.
 
+VS Code is not told the editor's theme, and its panel takes one fixed color for
+a box. Its percentages still get the palette's exact color for the theme, as
+they are pictures that can read the panel's text color. Each fill is one
+translucent color that lands close to the palette on both Light Modern and Dark
+Modern, and other editor themes shift it a little. Text beside them keeps the
+panel's own color.
+
 Notes:
 
-- `DB` marks the prompt cache in the terminal, `🔥` a warm one. Both are chosen
-  to draw alike in every terminal font; `≡` is the Actions control.
+- `🛢` marks the prompt cache in the terminal, `🔥` a warm one, and `≡` is the
+  Actions control. Each keeps its width in the terminals checked (mintty,
+  Windows Terminal, the classic console, VS Code's); how `🛢` looks depends on
+  the terminal's fonts, in color or in one color.
 - `~$` is the API-equivalent estimate from Claude Code's cost ledger
   (`/cost`), not your bill. A prompt's cost includes subagent spend during
   that prompt.

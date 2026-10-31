@@ -610,7 +610,7 @@ describe('terminal zones', () => {
     expect(rows).not.toBeNull()
     const [context, meta, quota] = [rows!.context!, rows!.meta!, rows!.quota!]
     expect(context[0]).toMatch(/^ 42% +84k\/200k $/)
-    expect(context[1]).toMatch(/^ DB — +↻ 0 $/)
+    expect(context[1]).toMatch(/^ 🛢 — +↻ 0 $/)
     expect(meta[0]).toMatch(/^ Last 6m35s +~\$0\.58 $/)
     expect(meta[1]).toMatch(/^ Session \d+✉ 2h11m +~\$9\.00 $/)
     expect(quota[0]).toMatch(/^ 5h 2h30m \d\d:\d\d +68% $/)
@@ -629,13 +629,13 @@ describe('terminal zones', () => {
     const holder = (await ui.findAll({ type: 'Box' })).find(found => found.children.some(child => (child as { props?: { key?: string } }).props?.key === 'actions'))
     expect(holder?.props.flexShrink).toBe(0)
     // A percentage and its fill take its level: 42 % Normal, 68 % Notice, 35 % Normal.
-    expect((await runsWith(ui, '42%'))[0]?.props.color).toBe('#6ee7a8')
-    expect((await runsWith(ui, '68%'))[0]?.props.color).toBe('#ffd866')
-    expect((await runsWith(ui, '35%'))[0]?.props.color).toBe('#6ee7a8')
+    expect((await runsWith(ui, '42%'))[0]?.props.color).toBe('#73e9ad')
+    expect((await runsWith(ui, '68%'))[0]?.props.color).toBe('#ffe075')
+    expect((await runsWith(ui, '35%'))[0]?.props.color).toBe('#73e9ad')
     expect((await runsWith(ui, '~$9.00'))[0]?.props.color).toBe('merged')
     // Each zone its own faint tint; the meters' fills in their levels' colors.
     const bgs = (await ui.findAll({ type: 'Text' })).map(found => found.props.backgroundColor).filter(Boolean)
-    expect(new Set(bgs)).toEqual(new Set(['#232a36', '#2a2634', '#212d2c', '#1d4d38', '#524516']))
+    expect(new Set(bgs)).toEqual(new Set(['#232a36', '#2a2634', '#212d2c', '#285743', '#645326']))
     await ui.unmount()
     expect(world.commands).toEqual([])
   })
@@ -767,10 +767,10 @@ describe('terminal zones', () => {
     await start($, clock)
     // Context 90 % Critical, 5h 68 % Notice, 7d 80 % Warning.
     for (const [theme, critical, notice, warning, ink] of [
-      ['light', ['#f8c0bc', '#9e1220'], ['#f6e39b', '#735400'], ['#fbcfa3', '#a03f00'], '#1b2a4a'],
-      ['light-daltonized', ['#f8c0bc', '#9e1220'], ['#f6e39b', '#735400'], ['#fbcfa3', '#a03f00'], '#1b2a4a'],
-      ['dark', ['#60272b', '#ff8a80'], ['#524516', '#ffd866'], ['#5e3a14', '#ffa94d'], '#f2f5f9'],
-      ['dark-daltonized', ['#60272b', '#ff8a80'], ['#524516', '#ffd866'], ['#5e3a14', '#ffa94d'], '#f2f5f9'],
+      ['light', ['#f2c1c7', '#a11e33'], ['#f7e9af', '#775300'], ['#f6ceab', '#91430f'], '#172334'],
+      ['light-daltonized', ['#f2c1c7', '#a11e33'], ['#f7e9af', '#775300'], ['#f6ceab', '#91430f'], '#172334'],
+      ['dark', ['#73343c', '#ff8d9a'], ['#645326', '#ffe075'], ['#754825', '#ffb26d'], '#f3f6fa'],
+      ['dark-daltonized', ['#73343c', '#ff8d9a'], ['#645326', '#ffe075'], ['#754825', '#ffb26d'], '#f3f6fa'],
     ] as const) {
       world.theme = theme
       const ui = await zoned($)
@@ -787,7 +787,7 @@ describe('terminal zones', () => {
     // The compact rows' percentages take the same colors.
     world.theme = 'light'
     const compact = await zoned($, 60, 10)
-    expect((await runsWith(compact, '68%'))[0]?.props.color).toBe('#735400')
+    expect((await runsWith(compact, '68%'))[0]?.props.color).toBe('#775300')
     await compact.unmount()
     // No fill of its own: the theme's keys, all four distinct.
     world.theme = 'auto'
@@ -823,7 +823,7 @@ describe('terminal zones', () => {
     await start($, clock)
     const ui = await zoned($)
     const rows = await zoneRows(ui)
-    expect(rows!.context![1]).toMatch(/^ DB 17m 🔥 +↻ 0 $/)
+    expect(rows!.context![1]).toMatch(/^ 🛢 17m 🔥 +↻ 0 $/)
     const width = (await ui.find({ key: 'context' }))?.props.width as number
     expect([...rows!.context![1]!].length + 1).toBe(width - 2)
     await ui.unmount()
@@ -1187,7 +1187,7 @@ describe('vscode', () => {
   const AMBER = '#bf8700'
   const ORANGE = '#d9730d'
   const RED = '#e5534b'
-  const FILLS = { normal: '#2ea0434d', notice: '#d4a0004d', warning: '#e8730a4d', critical: '#e5484d4d' }
+  const FILLS = { normal: '#50f28e3b', notice: '#ffcd2b54', warning: '#ff913363', critical: '#ff637259' }
 
   /** A busy session: 92 % context, a warm cache, 12 prompts sent, an agent at work. */
   function busyWorld(): World {
@@ -1680,7 +1680,7 @@ describe('vscode', () => {
     const ui = await vscodeBand($)
     // The fill at half strength, the figure the same color faded, its age in place of the reset clock.
     const boxes = await ui.findAll({ type: 'Box' })
-    expect(boxes.find(found => found.props.width === '40%')?.props.backgroundColor).toBe('#2ea04326')
+    expect(boxes.find(found => found.props.width === '40%')?.props.backgroundColor).toBe('#50f28e1d')
     const pct = await figureIn(ui, 'five-pct')
     expect(pct?.text).toBe('40%')
     expect(String(pct?.props.source)).toContain(`fill="${GREEN}"`)
