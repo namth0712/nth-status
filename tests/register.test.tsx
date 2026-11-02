@@ -253,12 +253,12 @@ const ended = (durationMs: number, isAborted = false, agentId?: string) =>
   }) as never
 
 describe('rows', () => {
-  test('all four rows from full data, in the terminal and the desktop app', async ($, on) => {
+  test('all four rows from full data, in the terminal', async ($, on) => {
     const world = fullWorld()
     world.agents = [{ id: 'a1', status: 'running', name: 'explorer', description: 'Find code', type: 'Explore' }]
     const clock = engine(on, world)
     await start($, clock)
-    for (const surface of ['terminal', 'desktop'] as const) {
+    for (const surface of ['terminal'] as const) {
       const text = await band($, surface)
       expect(text).toContain('acme-web-frontend')
       expect(text).toContain('feat/gameplay')
@@ -549,8 +549,8 @@ async function personTurn($: Engine, world: World, prompt: string, first: string
   await $.turn.complete({ ...(ended(2000) as object), answer: last } as never)
 }
 
-/** The band; the desktop app's Copy is the mod's own, the terminal's the built-in `/copy`. */
-async function mountBand($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
+/** The band; the phone's Copy is the mod's own, the terminal's the built-in `/copy`. */
+async function mountBand($: Engine, surface: 'terminal' | 'mobile' = 'terminal') {
   return $.ui.mount({ plugin: PLUGIN, surface, component: 'AbovePrompt', props: PROPS(100, 10) })
 }
 
@@ -677,7 +677,7 @@ describe('terminal zones', () => {
     expect(world.commands.at(-1)).toEqual({ command: 'copy', args: '' })
   })
 
-  test('narrow, short, the desktop app, or an unknown theme: the compact rows as before', async ($, on) => {
+  test('narrow, short, or an unknown theme: the compact rows as before; the desktop app its dashboard', async ($, on) => {
     const world = fullWorld()
     const clock = engine(on, world)
     await start($, clock)
@@ -689,13 +689,13 @@ describe('terminal zones', () => {
       return { isZoned, text }
     }
     // Too narrow for the three side by side (the reset clocks go first), too short with another
-    // band's room kept, or another surface.
+    // band's room kept; the desktop app draws the dashboard, never the zones.
     expect((await compact(76, 10)).isZoned).toBe(true)
     expect((await compact(60, 10)).isZoned).toBe(false)
     expect((await compact(60, 10)).text).toContain('Ctx 42%')
     expect((await compact(100, 6)).isZoned).toBe(false)
     expect((await compact(100, 10, 'desktop')).isZoned).toBe(false)
-    expect((await compact(100, 10, 'desktop')).text).toContain('Ctx 42%')
+    expect((await compact(100, 10, 'desktop')).text).not.toContain('Ctx 42%')
     // No theme to tint by: the zones without a fill, framed in the theme's own subtle color.
     const ui = await zoned($)
     expect((await ui.findAll({ type: 'Text' })).filter(found => found.props.backgroundColor !== undefined)).toEqual([])
@@ -842,7 +842,7 @@ describe('terminal zones', () => {
     await ui.unmount()
   })
 
-  test('Copy and Actions keep their brackets in the panel’s ink on a fill; a surface’s own button elsewhere', async ($, on) => {
+  test('Copy and Actions keep their brackets in the panel’s ink on a fill; the desktop has neither', async ($, on) => {
     const world = fullWorld()
     const clock = engine(on, world)
     await start($, clock)
@@ -858,8 +858,8 @@ describe('terminal zones', () => {
       { text: '[ ≡ ]', plain: true, variant: undefined },
     ])
     expect(await controls('desktop')).toEqual([
-      { text: 'Copy', plain: undefined, variant: 'primary' },
-      { text: 'Actions ▾', plain: undefined, variant: 'secondary' },
+      { text: undefined, plain: undefined, variant: undefined },
+      { text: undefined, plain: undefined, variant: undefined },
     ])
     world.theme = 'auto'
     expect(await controls('terminal')).toEqual([
@@ -921,7 +921,7 @@ describe('copy and actions', () => {
     const clock = engine(on, world)
     await start($, clock)
     await personTurn($, world, 'do it', 'ALPHA first part.', 'OMEGA closing part.')
-    const ui = await mountBand($, 'desktop')
+    const ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.copies).toEqual(['OMEGA closing part.'])
@@ -938,7 +938,7 @@ describe('copy and actions', () => {
     ]
     const clock = engine(on, world)
     await start($, clock)
-    const ui = await mountBand($, 'desktop')
+    const ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.copies).toEqual(['EARLIER last.'])
@@ -962,7 +962,7 @@ describe('copy and actions', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'No response requested.' }] },
     ]
     await $.turn.complete(ended(500, true))
-    const ui = await mountBand($, 'desktop')
+    const ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.copies).toEqual(['noted'])
@@ -977,7 +977,7 @@ describe('copy and actions', () => {
     await $.prompt.submit(typed('also this', { turnId: 't' }))
     world.apiMessages = [{ role: 'user', content: [{ type: 'text', text: 'also this' }] }, { role: 'assistant', content: [{ type: 'text', text: 'ANSWERED' }] }]
     await $.turn.complete({ ...(ended(500) as object), answer: 'ANSWERED' } as never)
-    const ui = await mountBand($, 'desktop')
+    const ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.copies).toEqual(['ANSWERED'])
@@ -994,7 +994,7 @@ describe('copy and actions', () => {
     world.apiMessages = []
     await start($, clock)
     expect(await menuKeys($)).toEqual([])
-    const ui = await mountBand($, 'desktop')
+    const ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.copies).toEqual([])
@@ -1006,13 +1006,13 @@ describe('copy and actions', () => {
     world.copyResult = { isCopied: false, reason: 'no-clipboard' }
     const clock = engine(on, world)
     await start($, clock)
-    let ui = await mountBand($, 'desktop')
+    let ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.copies).toEqual([])
     expect(world.toasts.join()).toContain('No completed response yet')
     await personTurn($, world, 'do it', 'A.', 'B.')
-    ui = await mountBand($, 'desktop')
+    ui = await mountBand($, 'mobile')
     await ui.press({ key: 'copy' })
     await ui.unmount()
     expect(world.toasts.join()).toContain('Copy failed: no clipboard')
@@ -1984,6 +1984,73 @@ describe('vscode', () => {
     expect(texts.find(found => found.text.startsWith('Session'))?.props.color).toBe('inactive')
     expect(texts.find(found => found.text.startsWith('~$ is the API-equivalent'))?.props.color).toBe('inactive')
     expect(texts.find(found => found.text.startsWith('68% used'))?.props.color).toBe(AMBER)
+  })
+})
+
+describe('desktop', () => {
+  const desktopBand = ($: Engine, bodyColumns = 90) =>
+    $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'AbovePrompt', props: PROPS(bodyColumns, 48) })
+  const buttonKeys = async ($: Engine) => {
+    const ui = await desktopBand($)
+    const keys = (await ui.findAll({ type: 'Button' })).map(found => found.key ?? '')
+    await ui.unmount()
+    return keys
+  }
+
+  test('the dashboard, whatever the CLI theme: the pickers alone in the header, three blocks, meters as fills', async ($, on) => {
+    const world = fullWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    const drawn: string[] = []
+    for (const theme of ['dark', 'light']) {
+      world.theme = theme
+      const ui = await desktopBand($)
+      expect((await ui.findAll({ type: 'Button' })).map(found => [found.key, found.props.variant])).toEqual([
+        ['model', undefined],
+        ['effort', undefined],
+      ])
+      for (const key of ['context', 'meta', 'quota', 'context-use', 'context-cache', 'last', 'session', 'five', 'seven']) {
+        expect(await ui.find({ key })).toBeDefined()
+      }
+      // The desktop pads a bordered Box that sets no padding of its own, leaving a fill no height.
+      for (const key of ['context-use', 'context-cache', 'last', 'session', 'five', 'seven']) expect((await ui.find({ key }))?.props.padding).toBe(0)
+      const boxes = await ui.findAll({ type: 'Box' })
+      // 42 % context Normal, 5h 68 % Notice, 7d 35 % Normal: the level's fill behind the figures.
+      expect(boxes.find(found => found.props.width === '42%')?.props.backgroundColor).toBe('#50f28e3b')
+      expect(boxes.find(found => found.props.width === '68%')?.props.backgroundColor).toBe('#ffcd2b54')
+      const alts = (await ui.findAll({ type: 'Svg' })).map(found => String(found.props.alt))
+      expect(alts).toEqual(expect.arrayContaining(['🛢️', '42%', '68%', '35%']))
+      // No CLI panel fill: the app's own theme shows through.
+      expect(boxes.some(found => found.props.backgroundColor === '#22252b' || found.props.backgroundColor === '#f4f5f7')).toBe(false)
+      drawn.push(JSON.stringify(boxes.map(found => found.props)))
+      await ui.unmount()
+    }
+    expect(drawn[0]).toBe(drawn[1])
+  })
+
+  test('Model and Effort open their choices under the header; a pick changes the session', async ($, on) => {
+    const world = fullWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    let ui = await desktopBand($)
+    await ui.press({ key: 'model' })
+    await ui.unmount()
+    expect((await buttonKeys($)).filter(key => key.startsWith('pick:'))).toEqual(['pick:default', 'pick:sonnet', 'pick:opus', 'pick:haiku', 'pick:cancel'])
+    ui = await desktopBand($)
+    await ui.press({ key: 'pick:sonnet' })
+    await ui.unmount()
+    expect(world.configSets).toEqual([{ key: 'model', value: 'sonnet' }])
+    expect(await buttonKeys($)).toEqual(['model', 'effort'])
+  })
+
+  test('the VS Code dashboard keeps its header: the pickers alone', async ($, on) => {
+    const world = fullWorld()
+    const clock = engine(on, world)
+    await start($, clock)
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'vscode', component: 'AbovePrompt', props: PROPS(50, 12) })
+    expect((await ui.findAll({ type: 'Button' })).map(found => found.key)).toEqual(['model', 'effort'])
+    expect((await ui.find({ key: 'five' }))?.props.padding).toBeUndefined()
+    await ui.unmount()
   })
 })
 

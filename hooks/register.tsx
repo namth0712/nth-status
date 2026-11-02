@@ -732,6 +732,8 @@ const VS_PATH_MAX = 60
 const CHARS_PER_COLUMN = 1.25
 /** Characters a picker Button takes beyond its label: its ` ▾`, padding and border. */
 const VS_CHIP = 5
+/** The desktop dashboard's own side inset, in columns, inside the app's frame. */
+const DESKTOP_INSET = 1
 
 /**
  * The widths that take a fill of `pct` % (whole) back to its row's whole width, outermost first:
@@ -754,9 +756,20 @@ function widen(pct: number): string[] {
  * drawn above. Levels alone are colored; everything else is the panel's text colors. The panel
  * flattens a Button's children to their text, so a Button's own `dimColor` marks it here: an
  * outlined chip, against the filled one of the current choice.
+ *
+ * The desktop app draws the same dashboard, with no Copy or Actions either: it too is not told its
+ * theme, so the CLI's theme-keyed panel would paint the wrong family there.
  */
-function vscodeBand($: EngineInterface, el: ElementTable<'vscode'>, value: Status, now: number, columns: number): RenderNode {
+function vscodeBand(
+  $: EngineInterface,
+  el: ElementTable<'vscode'>,
+  value: Status,
+  now: number,
+  columns: number,
+  surface: 'vscode' | 'desktop' = 'vscode',
+): RenderNode {
   const { Box, Text, Svg, Button } = el
+  const isDesktop = surface === 'desktop'
   const shown = board(value, now)
   const muted = { color: 'inactive' } as const
   const metrics = columns < VS_STACKED ? LOW_ROW : ROW
@@ -801,6 +814,9 @@ function vscodeBand($: EngineInterface, el: ElementTable<'vscode'>, value: Statu
         flexWrap="nowrap"
         borderStyle="round"
         borderColor={CLEAR}
+        // The desktop pads any bordered Box that sets none, which leaves this row no height inside
+        // for its fill: none of its own.
+        {...(isDesktop ? { padding: 0 } : {})}
         overflow="hidden"
         backgroundColor={meter ? TRACK : undefined}
       >
@@ -938,11 +954,14 @@ function vscodeBand($: EngineInterface, el: ElementTable<'vscode'>, value: Statu
     Math.floor(columns * CHARS_PER_COLUMN) -
     (branch ? branch.name.length + (branch.isWorktree ? 12 : 3) : 0) -
     (model ? model.length + VS_CHIP + 4 : 0) -
-    (effort ? effort.length + VS_CHIP : 0)
+    (effort ? effort.length + VS_CHIP : 0) -
+    (isDesktop ? 2 * DESKTOP_INSET : 0)
   const folder = value.folder ? shortPath(value.folder, Math.max(12, Math.min(VS_PATH_MAX, room))) : null
   const choices = pickerChoices(value)
+  // Desktop's frame leaves the band 8 px from its edges and its native picker buttons are taller
+  // than a line: an inset of its own, and more room under the header.
   return (
-    <Box flexDirection="column" rowGap={0.3}>
+    <Box flexDirection="column" rowGap={isDesktop ? 0.6 : 0.3} {...(isDesktop ? { paddingX: DESKTOP_INSET, paddingBottom: 0.25 } : {})}>
       <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1.5}>
         <Text wrap="truncate-end">
           {folder !== null && <Text bold>{folder}</Text>}
@@ -1202,22 +1221,22 @@ export const register: Register = on => {
     const value = await shown($)
     if (!value) return below
     const now = await $.clock.now()
-    // VS Code's panel draws in the editor's own theme and frames the band itself: its own dashboard
-    // there.
-    if (e.surface === 'vscode') {
-      const vscode = $.ui.resolve(e)
+    // VS Code's panel and the desktop app draw in their own theme and frame the band themselves:
+    // the dashboard there.
+    if (e.surface === 'vscode' || e.surface === 'desktop') {
+      const remote = $.ui.resolve(e)
       return (
-        <vscode.Box flexDirection="column" rowGap={0.5}>
+        <remote.Box flexDirection="column" rowGap={0.5}>
           {below}
-          {vscodeBand($, vscode, value, now, e.props.bodyColumns)}
-        </vscode.Box>
+          {vscodeBand($, remote, value, now, e.props.bodyColumns, e.surface)}
+        </remote.Box>
       )
     }
     const elements = $.ui.resolve(e)
     const { Box, Text, Button } = elements
     // The terminal's dashboard (a header with the controls, three bordered zones side by side, a
     // footer while it has something to show), where the zones fit side by side and its rows fit with
-    // other bands' room kept; else, and in the desktop app, the compact rows: a rounded panel where
+    // other bands' room kept; else, and on the other surfaces (mobile), the compact rows: a rounded panel where
     // it fits, else the bare rows.
     const cli = e.surface === 'terminal' ? cliLayout(value, now, e.props.bodyColumns) : null
     const isZoned = cli !== null && e.props.maxRows >= CLI_ROWS + (picker ? 1 : 0) + taskBandRows(e.props.maxRows)
